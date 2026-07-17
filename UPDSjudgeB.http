@@ -1,0 +1,6 @@
+@UPDSjudgeB_HostAddress = http://localhost:5152
+
+GET {{UPDSjudgeB_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

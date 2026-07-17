@@ -1,0 +1,42 @@
+## .NET / Visual Studio / Rider ##
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.vscode/
+*.userosscache
+*.sln.docstates
+
+## Publicación ##
+publish/
+*.pubxml
+*.pubxml.user
+
+## Secretos y configuración local ##
+appsettings.Development.json
+appsettings.Local.json
+appsettings.*.json
+!appsettings.json
+!appsettings.Example.json
+*.env
+.env
+.env.local
+
+## Certificados locales ##
+*.pfx
+*.pem
+
+## Uploads/temporales generados en tiempo de ejecución ##
+wwwroot/uploads/
+temp/
+logs/
+*.log
+
+## EF Core (si usas herramientas locales) ##
+*.db
+*.sqlite
+
+## Sistema operativo ##
+.DS_Store
+Thumbs.db
