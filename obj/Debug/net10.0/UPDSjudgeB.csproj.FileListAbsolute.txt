@@ -131,3 +131,4 @@
 /home/wilson/Documentos/Juez/UPDSjudgeB/bin/Debug/net10.0/zh-Hans/Microsoft.CodeAnalysis.Workspaces.MSBuild.resources.dll
 /home/wilson/Documentos/Juez/UPDSjudgeB/bin/Debug/net10.0/zh-Hant/Microsoft.CodeAnalysis.Workspaces.MSBuild.resources.dll
 /home/wilson/Documentos/Juez/UPDSjudgeB/bin/Debug/net10.0/BCrypt-Net-Next.dll
+/home/wilson/Documentos/Juez/UPDSjudgeB/obj/Debug/net10.0/UPDSjudgeB.sourcelink.json

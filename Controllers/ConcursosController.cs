@@ -35,10 +35,11 @@ namespace UPDSjudgeB.Controllers
             if (!dtoValido)
                 return BadRequest(new { mensaje = mensajeDto });
 
+            // Validamos duplicado por nombre, ya no por código
+            // (el código ahora lo genera el servidor, el cliente ya no lo manda)
             if (await _context.Concursos.AnyAsync(c => c.codigo == dto.codigo && c.estado == "Activo"))
-                return BadRequest(new { mensaje = "Ya existe un concurso activo con ese nombre." });
+                return BadRequest(new { mensaje = "Ya existe un concurso activo con ese codigo." });
 
-            // mapaCarpetas ahora es Dictionary<string, List<string>> (nombres de ruta, no ZipArchiveEntry)
             var (estructuraValida, mensajeEstructura, mapaCarpetas) =
                 await ValidarEstructuraZipAsync(dto.archivoZip, dto.listaProblemas);
             if (!estructuraValida)
@@ -100,7 +101,7 @@ namespace UPDSjudgeB.Controllers
 
                 return Ok(new
                 {
-                    idConcurso = nuevoConcurso.codigo,
+                    codigo = nuevoConcurso.codigo, // <-- esto es lo que usa el frontend para todo lo demás
                     mensaje = "Concurso, problemas y casos de prueba creados exitosamente."
                 });
             }
@@ -113,10 +114,10 @@ namespace UPDSjudgeB.Controllers
         [Authorize(Roles = "Usuario")]
         [HttpGet]
         public async Task<IActionResult> Listar(
-            [FromQuery] string filtro = "todos",
-            [FromQuery] string? busqueda = null,
-            [FromQuery] int pagina = 1,
-            [FromQuery] int tamanoPagina = 9)
+        [FromQuery] string filtro = "todos",
+        [FromQuery] string? busqueda = null,
+        [FromQuery] int pagina = 1,
+        [FromQuery] int tamanoPagina = 9)
         {
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
             int idUsuarioLogueado = userIdClaim != null ? int.Parse(userIdClaim) : 0;
@@ -552,7 +553,7 @@ namespace UPDSjudgeB.Controllers
 
             return (true, string.Empty, resultado);
         }
-        [Authorize(Roles ="Usuario")]
+        [Authorize(Roles = "Usuario")]
         [HttpPost("unirse")]
         public async Task<IActionResult> Unirse([FromBody] UnirseConcursoDto dto)
         {

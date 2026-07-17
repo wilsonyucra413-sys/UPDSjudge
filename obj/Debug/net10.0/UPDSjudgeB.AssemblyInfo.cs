@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("UPDSjudgeB")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1a14dbf875773db3b1f0fada88e23175f26e06e5")]
 [assembly: System.Reflection.AssemblyProductAttribute("UPDSjudgeB")]
 [assembly: System.Reflection.AssemblyTitleAttribute("UPDSjudgeB")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
