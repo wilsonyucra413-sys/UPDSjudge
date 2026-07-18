@@ -35,8 +35,6 @@ namespace UPDSjudgeB.Controllers
             if (!dtoValido)
                 return BadRequest(new { mensaje = mensajeDto });
 
-            // Validamos duplicado por nombre, ya no por código
-            // (el código ahora lo genera el servidor, el cliente ya no lo manda)
             if (await _context.Concursos.AnyAsync(c => c.codigo == dto.codigo && c.estado == "Activo"))
                 return BadRequest(new { mensaje = "Ya existe un concurso activo con ese codigo." });
 
@@ -101,7 +99,7 @@ namespace UPDSjudgeB.Controllers
 
                 return Ok(new
                 {
-                    codigo = nuevoConcurso.codigo, // <-- esto es lo que usa el frontend para todo lo demás
+                    codigo = nuevoConcurso.codigo,
                     mensaje = "Concurso, problemas y casos de prueba creados exitosamente."
                 });
             }

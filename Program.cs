@@ -16,14 +16,11 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 // ============================================================
 // 1.5. CORS (para que el frontend en React pueda consumir la API)
 // ============================================================
-var frontendOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
-    ?? new[] { "http://localhost:5173", "http://localhost:3000" };
-
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendDev", policy =>
     {
-        policy.WithOrigins(frontendOrigins)
+        policy.WithOrigins("http://localhost:8085")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();

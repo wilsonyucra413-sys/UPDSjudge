@@ -25,12 +25,7 @@ namespace UPDSjudgeB.DTOs
         public string urlSetProblemas { get; set; }
         public int minutosCongelamiento { get; set; }
         public string codigo { get; set; }
-        // Recibiremos la lista de problemas como un JSON String o campos individuales
-        // pero para procesar el ZIP, necesitamos que el nombre del problema 
-        // coincida con las carpetas A, B, C...
         public List<CrearProblemaDto> listaProblemas { get; set; }
-
-        // El archivo ZIP
         public IFormFile archivoZip { get; set; }
     }
     public class ConcursoListItemDto
