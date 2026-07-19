@@ -112,29 +112,58 @@ namespace UPDSjudgeB.Controllers
         [Authorize(Roles = "Usuario")]
         [HttpGet]
         public async Task<IActionResult> Listar(
-        [FromQuery] string filtro = "todos",
-        [FromQuery] string? busqueda = null,
-        [FromQuery] int pagina = 1,
-        [FromQuery] int tamanoPagina = 9)
+            [FromQuery] string filtro = "todos",
+            [FromQuery] string? modalidad = null,
+            [FromQuery] string? busqueda = null,
+            [FromQuery] int pagina = 1,
+            [FromQuery] int tamanoPagina = 20)
         {
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
             int idUsuarioLogueado = userIdClaim != null ? int.Parse(userIdClaim) : 0;
 
             if (pagina < 1) pagina = 1;
-            if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 9;
+            if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 20;
 
-            var ahora = DateTime.UtcNow; // OJO: fechaInicio debe guardarse también en UTC
+            var ahora = DateTime.UtcNow;
 
-            var query = _context.Concursos
-                .Where(c => c.estado == "Activo"); // solo no borrados lógicamente
-
+            IQueryable<Concurso> query = _context.Concursos
+                .Where(c => c.estado == "Activo");
             if (!string.IsNullOrWhiteSpace(busqueda))
-                query = query.Where(c => c.nombre.Contains(busqueda));
+                query = query.Where(c => EF.Functions.ILike(c.codigo, $"%{busqueda}%"));
 
-            // Proyectamos solo lo crudo que necesitamos. El cálculo de estadoTiempo
-            // depende de sumar minutos a una fecha, lo cual no todos los providers de
-            // EF Core traducen igual a SQL, así que lo resolvemos en memoria después.
+            query = filtro?.ToLowerInvariant() switch
+            {
+                "activos" => query.Where(c =>
+                    ahora >= c.fechaInicio && ahora < c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                "proximos" => query.Where(c => ahora < c.fechaInicio),
+                "finalizados" => query.Where(c =>
+                    ahora >= c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                _ => query
+            };
+
+            // Filtro de modalidad, AHORA antes del CountAsync
+            if (!string.IsNullOrWhiteSpace(modalidad))
+            {
+                bool quierePrivados = modalidad.Equals("privado", StringComparison.OrdinalIgnoreCase);
+                bool quierePublicos = modalidad.Equals("publico", StringComparison.OrdinalIgnoreCase);
+
+                if (quierePrivados)
+                    query = query.Where(c => c.contrasena != null && c.contrasena != "");
+                else if (quierePublicos)
+                    query = query.Where(c => c.contrasena == null || c.contrasena == "");
+            }
+
+            // El total ahora sí refleja TODOS los filtros aplicados: busqueda + filtro + modalidad
+            var total = await query.CountAsync();
+
+            query = query
+                .OrderBy(c => ahora < c.fechaInicio ? 1
+                            : (ahora < c.fechaInicio.AddMinutes(c.duracionMinutos) ? 0 : 2))
+                .ThenBy(c => c.fechaInicio);
+
             var crudos = await query
+                .Skip((pagina - 1) * tamanoPagina)
+                .Take(tamanoPagina)
                 .Select(c => new
                 {
                     c.idConcurso,
@@ -152,14 +181,11 @@ namespace UPDSjudgeB.Controllers
                 })
                 .ToListAsync();
 
-            var procesados = crudos.Select(c =>
+            var paginaDatos = crudos.Select(c =>
             {
                 var fechaFin = c.fechaInicio.AddMinutes(c.duracionMinutos);
-
-                string estadoTiempo;
-                if (ahora < c.fechaInicio) estadoTiempo = "Proximo";
-                else if (ahora < fechaFin) estadoTiempo = "Activo";
-                else estadoTiempo = "Finalizado";
+                string estadoTiempo = ahora < c.fechaInicio ? "Proximo"
+                    : ahora < fechaFin ? "Activo" : "Finalizado";
 
                 DateTime? fechaCongelamiento = c.minutosCongelamiento > 0
                     ? fechaFin.AddMinutes(-c.minutosCongelamiento)
@@ -187,27 +213,8 @@ namespace UPDSjudgeB.Controllers
                     yaInscrito = c.yaInscrito,
                     segundosRestantes = segundosRestantes
                 };
-            });
+            }).ToList();
 
-            // Filtro por pestaña (Todos / Activos / Próximos / Finalizados)
-            procesados = filtro?.ToLowerInvariant() switch
-            {
-                "activos" => procesados.Where(c => c.estadoTiempo == "Activo"),
-                "proximos" => procesados.Where(c => c.estadoTiempo == "Proximo"),
-                "finalizados" => procesados.Where(c => c.estadoTiempo == "Finalizado"),
-                _ => procesados
-            };
-
-            var listaCompleta = procesados
-                .OrderBy(c => c.estadoTiempo == "Activo" ? 0 : c.estadoTiempo == "Proximo" ? 1 : 2)
-                .ThenBy(c => c.fechaInicio)
-                .ToList();
-
-            var total = listaCompleta.Count;
-            var paginaDatos = listaCompleta
-                .Skip((pagina - 1) * tamanoPagina)
-                .Take(tamanoPagina)
-                .ToList();
             var idsFinalizadosInscritos = paginaDatos
                 .Where(c => c.estadoTiempo == "Finalizado" && c.yaInscrito)
                 .Select(c => c.idConcurso)
@@ -289,6 +296,25 @@ namespace UPDSjudgeB.Controllers
             }
 
             return Ok(resultado);
+        }
+        private async Task CompletarDesempenoAsync(
+            List<ConcursoListItemDto> items, List<int> idsConcursos, int idUsuario)
+        {
+            var resueltosPorConcurso = await _context.Envios
+                .Where(e => e.idUsuario == idUsuario
+                            && e.resultado == "Aceptado"
+                            && idsConcursos.Contains(e.Problema.idConcurso))
+                .Select(e => new { e.Problema.idConcurso, e.idProblema })
+                .Distinct()
+                .GroupBy(e => e.idConcurso)
+                .Select(g => new { idConcurso = g.Key, cantidad = g.Count() })
+                .ToDictionaryAsync(g => g.idConcurso, g => g.cantidad);
+
+            foreach (var item in items)
+            {
+                if (resueltosPorConcurso.TryGetValue(item.idConcurso, out var cantidad))
+                    item.miProblemasResueltos = cantidad;
+            }
         }
         [Authorize(Roles = "Usuario")]
         [HttpGet("detalle/{codigo}")]
@@ -375,26 +401,6 @@ namespace UPDSjudgeB.Controllers
             };
 
             return Ok(dto);
-        }
-        private async Task CompletarDesempenoAsync(
-            List<ConcursoListItemDto> items, List<int> idsConcursos, int idUsuario)
-        {
-            var resueltosPorConcurso = await _context.Envios
-                .Where(e => e.idUsuario == idUsuario
-                            && e.resultado == "Aceptado"
-                            && idsConcursos.Contains(e.Problema.idConcurso))
-                .Select(e => new { e.Problema.idConcurso, e.idProblema })
-                .Distinct()
-                .GroupBy(e => e.idConcurso)
-                .Select(g => new { idConcurso = g.Key, cantidad = g.Count() })
-                .ToListAsync();
-
-            foreach (var item in items)
-            {
-                var match = resueltosPorConcurso.FirstOrDefault(r => r.idConcurso == item.idConcurso);
-                if (match != null)
-                    item.miProblemasResueltos = match.cantidad;
-            }
         }
 
         private (bool, string) ValidarDatosConcurso(CrearConcursoDto dto)
@@ -551,6 +557,7 @@ namespace UPDSjudgeB.Controllers
 
             return (true, string.Empty, resultado);
         }
+
         [Authorize(Roles = "Usuario")]
         [HttpPost("unirse")]
         public async Task<IActionResult> Unirse([FromBody] UnirseConcursoDto dto)
@@ -570,20 +577,16 @@ namespace UPDSjudgeB.Controllers
                 return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
 
             var ahora = DateTime.UtcNow;
-            var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
 
-            // No dejamos inscribirse a un concurso que ya terminó
-            if (ahora >= fechaFin)
-                return BadRequest(new { mensaje = "No puedes inscribirte a un concurso que ya finalizó." });
+            // Las inscripciones cierran apenas inicia el concurso, no cuando termina.
+            if (ahora >= concurso.fechaInicio)
+                return BadRequest(new { mensaje = "Las inscripciones para este concurso ya están cerradas." });
 
-            // Validación de contraseña solo si el concurso es privado
             bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
             if (esPrivado)
             {
                 if (string.IsNullOrWhiteSpace(dto.contrasena))
                     return BadRequest(new { mensaje = "Este concurso es privado, debes ingresar la contraseña." });
-
-                // Comparación en texto plano, como acordamos
                 if (dto.contrasena != concurso.contrasena)
                     return Unauthorized(new { mensaje = "Contraseña incorrecta." });
             }
@@ -595,18 +598,11 @@ namespace UPDSjudgeB.Controllers
             {
                 if (participacionExistente.estado == "Activo")
                     return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
+
                 participacionExistente.estado = "Activo";
                 participacionExistente.fechaIngreso = ahora;
-
-                try
-                {
-                    await _context.SaveChangesAsync();
-                    return Ok(new { mensaje = "Te has vuelto a inscribir al concurso.", codConcurso = concurso.codigo });
-                }
-                catch (DbUpdateException ex)
-                {
-                    return BadRequest(new { mensaje = "No se pudo procesar la inscripción.", detalle = ex.Message });
-                }
+                await _context.SaveChangesAsync();
+                return Ok(new { mensaje = "Te has vuelto a inscribir al concurso.", codConcurso = concurso.codigo });
             }
 
             var nuevaParticipacion = new ParticipanteConcurso
