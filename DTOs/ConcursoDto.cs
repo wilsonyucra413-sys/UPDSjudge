@@ -102,4 +102,31 @@ namespace UPDSjudgeB.DTOs
         public string codigo { get; set; }
         public string? contrasena { get; set; }
     }
+    public class ConcursoAdminItemDto
+    {
+        public string codigo { get; set; }
+        public string nombre { get; set; }
+        public string estadoTiempo { get; set; }   // "Proximo" | "Activo" | "Finalizado"
+        public string modalidad { get; set; }       // "Publico" | "Privado"
+        public DateTime fechaInicio { get; set; }
+        public int duracionMinutos { get; set; }
+        public int cantidadProblemas { get; set; }
+        public int cantidadParticipantes { get; set; }
+    }
+
+    public class ResumenConteoDto
+    {
+        public int activos { get; set; }
+        public int proximos { get; set; }
+        public int finalizados { get; set; }
+    }
+
+    public class ConcursosAdminPaginadosDto
+    {
+        public int total { get; set; }
+        public int pagina { get; set; }
+        public int tamanoPagina { get; set; }
+        public ResumenConteoDto resumen { get; set; }
+        public List<ConcursoAdminItemDto> concursos { get; set; }
+    }
 }

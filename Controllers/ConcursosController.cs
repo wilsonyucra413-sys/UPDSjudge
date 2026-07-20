@@ -40,7 +40,7 @@ namespace UPDSjudgeB.Controllers
             {
                 DateTimeKind.Utc => dto.fechaInicio,
                 DateTimeKind.Local => dto.fechaInicio.ToUniversalTime(),
-                _ => DateTime.SpecifyKind(dto.fechaInicio, DateTimeKind.Utc) 
+                _ => DateTime.SpecifyKind(dto.fechaInicio, DateTimeKind.Utc)
             };
 
             var (dtoValido, mensajeDto) = ValidarDatosConcurso(dto);
@@ -499,7 +499,7 @@ namespace UPDSjudgeB.Controllers
 
 
         private static readonly string[] CategoriasValidas =
-            { "div4", "div3", "div2", "div1", "prev", "icpc", "sp" }; 
+            { "div4", "div3", "div2", "div1", "prev", "icpc", "sp" };
 
         private (bool, string) ValidarFormatoCodigo(string codigo)
         {
@@ -729,7 +729,117 @@ namespace UPDSjudgeB.Controllers
                 return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
             }
         }
+        
+        [Authorize(Roles = "AdministradorConcursos")]
+        [HttpGet("mis-creados")]
+        public async Task<IActionResult> MisCreados(
+            [FromQuery] string filtro = "todos",
+            [FromQuery] string? modalidad = null,
+            [FromQuery] string? busqueda = null,
+            [FromQuery] int pagina = 1,
+            [FromQuery] int tamanoPagina = 20)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
 
+            if (pagina < 1) pagina = 1;
+            if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 20;
+
+            var ahora = DateTime.UtcNow;
+
+            // Base: solo concursos no borrados, creados por este usuario
+            IQueryable<Concurso> queryBase = _context.Concursos
+                .Where(c => c.estado == "Activo" && c.idUsuarioCreador == idUsuarioLogueado);
+
+            if (!string.IsNullOrWhiteSpace(busqueda))
+                queryBase = queryBase.Where(c => EF.Functions.ILike(c.codigo, $"%{busqueda}%"));
+
+            if (!string.IsNullOrWhiteSpace(modalidad))
+            {
+                bool quierePrivados = modalidad.Equals("privado", StringComparison.OrdinalIgnoreCase);
+                bool quierePublicos = modalidad.Equals("publico", StringComparison.OrdinalIgnoreCase);
+
+                if (quierePrivados)
+                    queryBase = queryBase.Where(c => c.contrasena != null && c.contrasena != "");
+                else if (quierePublicos)
+                    queryBase = queryBase.Where(c => c.contrasena == null || c.contrasena == "");
+            }
+
+            // El resumen de conteos se calcula sobre queryBase (respeta busqueda/modalidad,
+            // pero NO el filtro de pestaña — así el usuario ve "cuántos hay en cada estado"
+            // sin importar en cuál pestaña esté parado ahora mismo)
+            var resumen = new ResumenConteoDto
+            {
+                activos = await queryBase.CountAsync(c =>
+                    ahora >= c.fechaInicio && ahora < c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                proximos = await queryBase.CountAsync(c => ahora < c.fechaInicio),
+                finalizados = await queryBase.CountAsync(c =>
+                    ahora >= c.fechaInicio.AddMinutes(c.duracionMinutos))
+            };
+
+            // A partir de aquí sí aplicamos el filtro de pestaña, para la lista paginada
+            IQueryable<Concurso> query = filtro?.ToLowerInvariant() switch
+            {
+                "activos" => queryBase.Where(c =>
+                    ahora >= c.fechaInicio && ahora < c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                "proximos" => queryBase.Where(c => ahora < c.fechaInicio),
+                "finalizados" => queryBase.Where(c =>
+                    ahora >= c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                _ => queryBase
+            };
+
+            var total = await query.CountAsync();
+
+            query = query
+                .OrderBy(c => ahora < c.fechaInicio ? 1
+                            : (ahora < c.fechaInicio.AddMinutes(c.duracionMinutos) ? 0 : 2))
+                .ThenBy(c => c.fechaInicio);
+
+            var crudos = await query
+                .Skip((pagina - 1) * tamanoPagina)
+                .Take(tamanoPagina)
+                .Select(c => new
+                {
+                    c.codigo,
+                    c.nombre,
+                    c.contrasena,
+                    c.fechaInicio,
+                    c.duracionMinutos,
+                    cantidadProblemas = c.Problemas.Count(p => p.estado == "Activo"),
+                    cantidadParticipantes = c.Participantes.Count(pc => pc.estado == "Activo")
+                })
+                .ToListAsync();
+
+            var paginaDatos = crudos.Select(c =>
+            {
+                var fechaFin = c.fechaInicio.AddMinutes(c.duracionMinutos);
+                string estadoTiempo = ahora < c.fechaInicio ? "Proximo"
+                    : ahora < fechaFin ? "Activo" : "Finalizado";
+
+                return new ConcursoAdminItemDto
+                {
+                    codigo = c.codigo,
+                    nombre = c.nombre,
+                    estadoTiempo = estadoTiempo,
+                    modalidad = string.IsNullOrWhiteSpace(c.contrasena) ? "Publico" : "Privado",
+                    fechaInicio = c.fechaInicio,
+                    duracionMinutos = c.duracionMinutos,
+                    cantidadProblemas = c.cantidadProblemas,
+                    cantidadParticipantes = c.cantidadParticipantes
+                };
+            }).ToList();
+
+            return Ok(new ConcursosAdminPaginadosDto
+            {
+                total = total,
+                pagina = pagina,
+                tamanoPagina = tamanoPagina,
+                resumen = resumen,
+                concursos = paginaDatos
+            });
+        }
         private static async Task<string> LeerContenidoAsync(ZipArchiveEntry entrada)
         {
             using var reader = new StreamReader(entrada.Open());
