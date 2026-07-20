@@ -18,3 +18,16 @@
 | PUT    | `/api/Concursos/{codigo}`           | Editar un concurso                                  |
 | DELETE | `/api/Concursos/{codigo}`           | Borrado lógico de un concurso                       |
 | HUB    | `/hubs/envios`                      | Notificación en tiempo real de veredicto            |
+
+---
+## Formato de codigo 
+| Tipo                     | Código          |
+| ------------------------ | --------------- |
+| Entrenamiento Div4       | `UPDS-DIV4-001` |
+| Entrenamiento Div3       | `UPDS-DIV3-001` |
+| Entrenamiento Div2       | `UPDS-DIV2-001` |
+| Entrenamiento Div1       | `UPDS-DIV1-001` |
+| Clasificatoria           | `UPDS-PREV-001` |
+| Competencia oficial      | `UPDS-001`      |
+| Competencia ICPC interna | `UPDS-ICPC-001` |
+| Maratón especial         | `UPDS-SP-001`   |

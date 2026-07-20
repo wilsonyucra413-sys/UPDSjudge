@@ -35,7 +35,6 @@ namespace UPDSjudgeB.DTOs
         public string descripcion { get; set; }
         public string codigo { get; set; }
 
-        // Calculados, no vienen directo de la BD
         public string estadoTiempo { get; set; }   // "Proximo" | "Activo" | "Finalizado"
         public string modalidad { get; set; }       // "Publico" | "Privado"
 

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -12,7 +13,20 @@ var builder = WebApplication.CreateBuilder(args);
 // ============================================================
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("UPDSjudge")));
+const long limiteMB = 100;
+const long limiteBytes = limiteMB * 1024 * 1024;
 
+// 1. Límite general de Kestrel para el tamaño del request completo
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = limiteBytes;
+});
+
+// 2. Límite específico para formularios multipart (donde va tu archivoZip)
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = limiteBytes;
+});
 // ============================================================
 // 1.5. CORS (para que el frontend en React pueda consumir la API)
 // ============================================================
@@ -118,7 +132,8 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(c => {
+    app.UseSwaggerUI(c =>
+    {
         c.SwaggerEndpoint("/swagger/v1/swagger.json", "Mini Juez v1");
     });
 }

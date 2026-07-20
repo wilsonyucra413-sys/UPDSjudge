@@ -24,6 +24,8 @@ namespace UPDSjudgeB.Controllers
         }
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpPost("crear")]
+        [RequestSizeLimit(100 * 1024 * 1024)] // 100 MB
+        [RequestFormLimits(MultipartBodyLengthLimit = 100 * 1024 * 1024)]
         public async Task<IActionResult> Crear([FromForm] CrearConcursoDto dto)
         {
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
@@ -31,12 +33,22 @@ namespace UPDSjudgeB.Controllers
                 return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
 
+            // Normalizamos ANTES de validar formato y ANTES de comparar duplicados
+            dto.codigo = dto.codigo?.Trim().ToLowerInvariant();
+
+            dto.fechaInicio = dto.fechaInicio.Kind switch
+            {
+                DateTimeKind.Utc => dto.fechaInicio,
+                DateTimeKind.Local => dto.fechaInicio.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(dto.fechaInicio, DateTimeKind.Utc) 
+            };
+
             var (dtoValido, mensajeDto) = ValidarDatosConcurso(dto);
             if (!dtoValido)
                 return BadRequest(new { mensaje = mensajeDto });
 
             if (await _context.Concursos.AnyAsync(c => c.codigo == dto.codigo && c.estado == "Activo"))
-                return BadRequest(new { mensaje = "Ya existe un concurso activo con ese codigo." });
+                return BadRequest(new { mensaje = "Ya existe un concurso activo con ese código." });
 
             var (estructuraValida, mensajeEstructura, mapaCarpetas) =
                 await ValidarEstructuraZipAsync(dto.archivoZip, dto.listaProblemas);
@@ -109,6 +121,7 @@ namespace UPDSjudgeB.Controllers
                 return BadRequest(new { mensaje = "Error al procesar el concurso.", detalle = ex.Message });
             }
         }
+
         [Authorize(Roles = "Usuario")]
         [HttpGet]
         public async Task<IActionResult> Listar(
@@ -128,6 +141,7 @@ namespace UPDSjudgeB.Controllers
 
             IQueryable<Concurso> query = _context.Concursos
                 .Where(c => c.estado == "Activo");
+
             if (!string.IsNullOrWhiteSpace(busqueda))
                 query = query.Where(c => EF.Functions.ILike(c.codigo, $"%{busqueda}%"));
 
@@ -141,7 +155,6 @@ namespace UPDSjudgeB.Controllers
                 _ => query
             };
 
-            // Filtro de modalidad, AHORA antes del CountAsync
             if (!string.IsNullOrWhiteSpace(modalidad))
             {
                 bool quierePrivados = modalidad.Equals("privado", StringComparison.OrdinalIgnoreCase);
@@ -153,7 +166,6 @@ namespace UPDSjudgeB.Controllers
                     query = query.Where(c => c.contrasena == null || c.contrasena == "");
             }
 
-            // El total ahora sí refleja TODOS los filtros aplicados: busqueda + filtro + modalidad
             var total = await query.CountAsync();
 
             query = query
@@ -233,6 +245,7 @@ namespace UPDSjudgeB.Controllers
                 concursos = paginaDatos
             });
         }
+
         [Authorize(Roles = "Usuario")]
         [HttpGet("mis-registros")]
         public async Task<IActionResult> MisRegistros()
@@ -258,7 +271,6 @@ namespace UPDSjudgeB.Controllers
                     cantidadProblemas = pc.Concurso.Problemas.Count(p => p.estado == "Activo"),
                     cantidadParticipantes = pc.Concurso.Participantes.Count(p => p.estado == "Activo")
                 })
-                .Where(c => c.idConcurso != 0)
                 .ToListAsync();
 
             var resultado = crudos.Select(c =>
@@ -297,6 +309,7 @@ namespace UPDSjudgeB.Controllers
 
             return Ok(resultado);
         }
+
         private async Task CompletarDesempenoAsync(
             List<ConcursoListItemDto> items, List<int> idsConcursos, int idUsuario)
         {
@@ -316,6 +329,7 @@ namespace UPDSjudgeB.Controllers
                     item.miProblemasResueltos = cantidad;
             }
         }
+
         [Authorize(Roles = "Usuario")]
         [HttpGet("detalle/{codigo}")]
         public async Task<IActionResult> Detalle(string codigo)
@@ -325,10 +339,11 @@ namespace UPDSjudgeB.Controllers
                 return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
 
+            codigo = codigo?.Trim().ToLowerInvariant();
+
             if (string.IsNullOrWhiteSpace(codigo))
                 return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
 
-            // Verificación por código, no por id, como pediste
             var crudo = await _context.Concursos
                 .Where(c => c.codigo == codigo && c.estado == "Activo")
                 .Select(c => new
@@ -372,7 +387,6 @@ namespace UPDSjudgeB.Controllers
             else estadoTiempo = "Finalizado";
 
             bool esPrivado = !string.IsNullOrWhiteSpace(crudo.contrasena);
-
             bool mostrarProblemas = estadoTiempo != "Proximo"
                                      && (!esPrivado || crudo.yaInscrito);
 
@@ -403,28 +417,66 @@ namespace UPDSjudgeB.Controllers
             return Ok(dto);
         }
 
+        // Constantes de la clase
+        private const int MAXIMO_PROBLEMAS_POR_CONCURSO = 12;
+        private const long TAMANO_MAXIMO_POR_ARCHIVO_BYTES = 5 * 1024 * 1024;
+        private const long TAMANO_MAXIMO_DESCOMPRIMIDO_TOTAL_BYTES = 600 * 1024 * 1024;
+        private const int DURACION_MAXIMA_MINUTOS = 7 * 24 * 60; // 7 días
+        private const int MESES_MAXIMOS_A_FUTURO = 12;
+
         private (bool, string) ValidarDatosConcurso(CrearConcursoDto dto)
         {
+            if (string.IsNullOrWhiteSpace(dto.codigo))
+                return (false, "El código del concurso es obligatorio.");
+
+            var (codigoValido, mensajeCodigo) = ValidarFormatoCodigo(dto.codigo);
+            if (!codigoValido)
+                return (false, mensajeCodigo);
+
             if (string.IsNullOrWhiteSpace(dto.nombre))
                 return (false, "El nombre del concurso es obligatorio.");
+
             if (string.IsNullOrWhiteSpace(dto.descripcion))
                 return (false, "La descripción del concurso es obligatoria.");
+
             if (dto.duracionMinutos <= 0)
                 return (false, "La duración del concurso debe ser mayor a 0 minutos.");
+
+            if (dto.duracionMinutos > DURACION_MAXIMA_MINUTOS)
+                return (false, $"La duración del concurso no puede superar los {DURACION_MAXIMA_MINUTOS / 60 / 24} días.");
+
             if (dto.minutosCongelamiento < 0)
                 return (false, "Los minutos de congelamiento no pueden ser negativos.");
+
             if (dto.minutosCongelamiento >= dto.duracionMinutos)
                 return (false, "Los minutos de congelamiento no pueden ser mayores o iguales a la duración del concurso.");
+
             if (dto.fechaInicio == default)
                 return (false, "La fecha de inicio es obligatoria.");
-            if (dto.fechaInicio <= DateTime.Now)
+
+            // dto.fechaInicio ya llega normalizado a UTC desde Crear()
+            if (dto.fechaInicio <= DateTime.UtcNow)
                 return (false, "La fecha de inicio debe ser posterior a la fecha actual.");
+
+            if (dto.fechaInicio > DateTime.UtcNow.AddMonths(MESES_MAXIMOS_A_FUTURO))
+                return (false, $"La fecha de inicio no puede programarse con más de {MESES_MAXIMOS_A_FUTURO} meses de anticipación.");
+
             if (dto.archivoZip == null || dto.archivoZip.Length == 0)
                 return (false, "Debe adjuntar un archivo ZIP con los casos de prueba.");
+
             if (!dto.archivoZip.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 return (false, "El archivo adjunto debe tener extensión .zip.");
+
+            const long limiteMB = 100;
+            const long limiteBytes = limiteMB * 1024 * 1024;
+            if (dto.archivoZip.Length > limiteBytes)
+                return (false, $"El archivo ZIP no debe superar los {limiteMB} MB. Tamaño actual: {dto.archivoZip.Length / (1024.0 * 1024.0):F1} MB.");
+
             if (dto.listaProblemas == null || !dto.listaProblemas.Any())
                 return (false, "Debe incluir al menos un problema.");
+
+            if (dto.listaProblemas.Count > MAXIMO_PROBLEMAS_POR_CONCURSO)
+                return (false, $"Un concurso no puede tener más de {MAXIMO_PROBLEMAS_POR_CONCURSO} problemas.");
 
             foreach (var p in dto.listaProblemas)
             {
@@ -445,8 +497,34 @@ namespace UPDSjudgeB.Controllers
             return (true, string.Empty);
         }
 
+
+        private static readonly string[] CategoriasValidas =
+            { "div4", "div3", "div2", "div1", "prev", "icpc", "sp" }; 
+
+        private (bool, string) ValidarFormatoCodigo(string codigo)
+        {
+            if (string.IsNullOrWhiteSpace(codigo))
+                return (false, "El código del concurso es obligatorio.");
+
+            var partes = codigo.Split('-');
+
+            bool formatoSimple = partes.Length == 2 && partes[0] == "upds"; // minúscula
+            bool formatoConCategoria = partes.Length == 3 && partes[0] == "upds"
+                                        && CategoriasValidas.Contains(partes[1]); // minúscula
+
+            if (!formatoSimple && !formatoConCategoria)
+                return (false, $"El código debe ser UPDS-001 o UPDS-CATEGORIA-001, " +
+                                $"donde CATEGORIA es una de: {string.Join(", ", CategoriasValidas).ToUpperInvariant()}.");
+
+            string numeroFinal = partes[^1];
+            if (numeroFinal.Length != 3 || !numeroFinal.All(char.IsDigit))
+                return (false, "El código debe terminar en 3 dígitos (ej: 001, 002).");
+
+            return (true, string.Empty);
+        }
+
         // =====================================================================
-        // Ahora devuelve Dictionary<string, List<string>> — solo nombres de ruta.
+        // Devuelve Dictionary<string, List<string>> — solo nombres de ruta.
         // Nunca guardamos ZipArchiveEntry aquí porque quedaría ligado
         // a un ZipArchive que se cierra al salir de este método.
         // =====================================================================
@@ -461,6 +539,7 @@ namespace UPDSjudgeB.Controllers
             {
                 var mapaCarpetas = new Dictionary<string, List<string>>();
                 var carpetasEnZip = new HashSet<string>();
+                long totalDescomprimido = 0;
 
                 using var stream = archivoZip.OpenReadStream();
                 using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
@@ -475,17 +554,40 @@ namespace UPDSjudgeB.Controllers
                     if (partes.Length < 2) continue;
 
                     string carpeta = partes[partes.Length - 2].ToUpperInvariant();
-
                     if (carpeta.Length != 1 || !char.IsLetter(carpeta[0]))
                         continue;
 
                     carpetasEnZip.Add(carpeta);
 
-                    if (entrada.Name.EndsWith(".in", StringComparison.OrdinalIgnoreCase))
+                    bool esIn = entrada.Name.EndsWith(".in", StringComparison.OrdinalIgnoreCase);
+                    bool esOut = entrada.Name.EndsWith(".out", StringComparison.OrdinalIgnoreCase);
+
+                    if (esIn || esOut)
+                    {
+                        if (entrada.Length > TAMANO_MAXIMO_POR_ARCHIVO_BYTES)
+                        {
+                            return (false,
+                                $"El archivo '{entrada.FullName}' pesa {entrada.Length / (1024.0 * 1024.0):F1} MB, " +
+                                $"supera el máximo permitido de {TAMANO_MAXIMO_POR_ARCHIVO_BYTES / (1024 * 1024)} MB por archivo.",
+                                mapaCarpetas);
+                        }
+
+                        totalDescomprimido += entrada.Length;
+
+                        if (totalDescomprimido > TAMANO_MAXIMO_DESCOMPRIMIDO_TOTAL_BYTES)
+                        {
+                            return (false,
+                                $"El contenido descomprimido del ZIP supera el máximo permitido de " +
+                                $"{TAMANO_MAXIMO_DESCOMPRIMIDO_TOTAL_BYTES / (1024 * 1024)} MB.",
+                                mapaCarpetas);
+                        }
+                    }
+
+                    if (esIn)
                     {
                         if (!mapaCarpetas.ContainsKey(carpeta))
                             mapaCarpetas[carpeta] = new List<string>();
-                        mapaCarpetas[carpeta].Add(entrada.FullName); // solo el nombre
+                        mapaCarpetas[carpeta].Add(entrada.FullName);
                     }
                 }
 
@@ -567,6 +669,8 @@ namespace UPDSjudgeB.Controllers
                 return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
 
+            dto.codigo = dto.codigo?.Trim().ToLowerInvariant();
+
             if (string.IsNullOrWhiteSpace(dto.codigo))
                 return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
 
@@ -578,7 +682,6 @@ namespace UPDSjudgeB.Controllers
 
             var ahora = DateTime.UtcNow;
 
-            // Las inscripciones cierran apenas inicia el concurso, no cuando termina.
             if (ahora >= concurso.fechaInicio)
                 return BadRequest(new { mensaje = "Las inscripciones para este concurso ya están cerradas." });
 
@@ -587,6 +690,7 @@ namespace UPDSjudgeB.Controllers
             {
                 if (string.IsNullOrWhiteSpace(dto.contrasena))
                     return BadRequest(new { mensaje = "Este concurso es privado, debes ingresar la contraseña." });
+
                 if (dto.contrasena != concurso.contrasena)
                     return Unauthorized(new { mensaje = "Contraseña incorrecta." });
             }
@@ -625,6 +729,7 @@ namespace UPDSjudgeB.Controllers
                 return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
             }
         }
+
         private static async Task<string> LeerContenidoAsync(ZipArchiveEntry entrada)
         {
             using var reader = new StreamReader(entrada.Open());
