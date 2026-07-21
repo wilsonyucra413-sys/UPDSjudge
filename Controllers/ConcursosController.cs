@@ -538,6 +538,7 @@ namespace UPDSjudgeB.Controllers
             return await Task.Run(() =>
             {
                 var mapaCarpetas = new Dictionary<string, List<string>>();
+                var nombresOuts = new List<string>(); 
                 var carpetasEnZip = new HashSet<string>();
                 long totalDescomprimido = 0;
 
@@ -589,6 +590,10 @@ namespace UPDSjudgeB.Controllers
                             mapaCarpetas[carpeta] = new List<string>();
                         mapaCarpetas[carpeta].Add(entrada.FullName);
                     }
+                    else if (esOut)
+                    {
+                        nombresOuts.Add(entrada.FullName);
+                    }
                 }
 
                 var sobrantes = carpetasEnZip.Except(incisosEsperados).ToList();
@@ -603,6 +608,18 @@ namespace UPDSjudgeB.Controllers
                 {
                     if (!mapaCarpetas.ContainsKey(inciso) || !mapaCarpetas[inciso].Any())
                         return (false, $"La carpeta del inciso '{inciso}' no contiene archivos .in", mapaCarpetas);
+                }
+
+                var todosLosIn = mapaCarpetas.Values
+                    .SelectMany(lista => lista)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var rutaOut in nombresOuts)
+                {
+                    string rutaInEsperada = rutaOut.Substring(0, rutaOut.Length - 4) + ".in";
+
+                    if (!todosLosIn.Contains(rutaInEsperada))
+                        return (false, $"El archivo '{rutaOut}' no tiene su pareja .in correspondiente.", mapaCarpetas);
                 }
 
                 return (true, string.Empty, mapaCarpetas);
@@ -729,7 +746,7 @@ namespace UPDSjudgeB.Controllers
                 return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
             }
         }
-        
+
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpGet("mis-creados")]
         public async Task<IActionResult> MisCreados(

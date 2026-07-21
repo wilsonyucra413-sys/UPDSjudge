@@ -21,7 +21,7 @@ namespace UPDSjudgeB.DTOs
         public string descripcion { get; set; }
         public DateTime fechaInicio { get; set; }
         public int duracionMinutos { get; set; }
-        public string contrasena { get; set; } = string.Empty;
+        public string? contrasena { get; set; }
         public string urlSetProblemas { get; set; }
         public int minutosCongelamiento { get; set; }
         public string codigo { get; set; }
