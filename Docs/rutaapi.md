@@ -6,7 +6,7 @@
 | POST   | `/api/Concursos/crear`              | Crear concurso + problemas + ZIP                   |
 | GET    | `/api/Concursos/mis-registros`      | Concursos donde estoy inscrito                      |
 | GET    | `/api/Concursos/detalle/{codigo}`   | Detalle del concurso + problemas (si ya inició)     |
-| POST   | `/api/Concursos/unirse`             | Inscribirse a un concurso (valida contraseña si es privado) |
+| POST   | `/api/ParticipanteConcursos/unirse`             | Inscribirse a un concurso (valida contraseña si es privado) |
 | GET    | `/api/Roles`                        | Listar roles disponibles                            |
 | GET    | `/api/Roles/usuarios`               | Buscar usuarios y sus roles                         |
 | POST   | `/api/Roles/usuarios`               | Asignar rol a un usuario                            |
@@ -18,5 +18,5 @@
 | PUT    | `/api/Concursos/{codigo}`           | Editar un concurso                                  |
 | DELETE | `/api/Concursos/{codigo}`           | Borrado lógico de un concurso                       |
 | HUB    | `/hubs/envios`                      | Notificación en tiempo real de veredicto            |
-
+| GET    | `/api/concursos/mis-creados`        | Listar los concursos creados por el usuario con filtro|
 ---

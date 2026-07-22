@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using UPDSjudgeB.data;
 using UPDSjudgeB.DTOs;
 using UPDSjudgeB.Models;
+using static UPDSjudgeB.DTOs.ProblemaDto;
 
 namespace UPDSjudgeB.Controllers
 {
@@ -315,7 +316,7 @@ namespace UPDSjudgeB.Controllers
         {
             var resueltosPorConcurso = await _context.Envios
                 .Where(e => e.idUsuario == idUsuario
-                            && e.resultado == "Aceptado"
+                            && e.resultado == VeredictosEnvio.Aceptado
                             && idsConcursos.Contains(e.Problema.idConcurso))
                 .Select(e => new { e.Problema.idConcurso, e.idProblema })
                 .Distinct()
@@ -329,7 +330,6 @@ namespace UPDSjudgeB.Controllers
                     item.miProblemasResueltos = cantidad;
             }
         }
-
         [Authorize(Roles = "Usuario")]
         [HttpGet("detalle/{codigo}")]
         public async Task<IActionResult> Detalle(string codigo)
@@ -538,7 +538,7 @@ namespace UPDSjudgeB.Controllers
             return await Task.Run(() =>
             {
                 var mapaCarpetas = new Dictionary<string, List<string>>();
-                var nombresOuts = new List<string>(); 
+                var nombresOuts = new List<string>();
                 var carpetasEnZip = new HashSet<string>();
                 long totalDescomprimido = 0;
 
@@ -677,75 +677,6 @@ namespace UPDSjudgeB.Controllers
             return (true, string.Empty, resultado);
         }
 
-        [Authorize(Roles = "Usuario")]
-        [HttpPost("unirse")]
-        public async Task<IActionResult> Unirse([FromBody] UnirseConcursoDto dto)
-        {
-            var userIdClaim = User.FindFirst("idUsuario")?.Value;
-            if (userIdClaim == null)
-                return Unauthorized(new { mensaje = "Token inválido" });
-            int idUsuarioLogueado = int.Parse(userIdClaim);
-
-            dto.codigo = dto.codigo?.Trim().ToLowerInvariant();
-
-            if (string.IsNullOrWhiteSpace(dto.codigo))
-                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
-
-            var concurso = await _context.Concursos
-                .FirstOrDefaultAsync(c => c.codigo == dto.codigo && c.estado == "Activo");
-
-            if (concurso == null)
-                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
-
-            var ahora = DateTime.UtcNow;
-
-            if (ahora >= concurso.fechaInicio)
-                return BadRequest(new { mensaje = "Las inscripciones para este concurso ya están cerradas." });
-
-            bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
-            if (esPrivado)
-            {
-                if (string.IsNullOrWhiteSpace(dto.contrasena))
-                    return BadRequest(new { mensaje = "Este concurso es privado, debes ingresar la contraseña." });
-
-                if (dto.contrasena != concurso.contrasena)
-                    return Unauthorized(new { mensaje = "Contraseña incorrecta." });
-            }
-
-            var participacionExistente = await _context.ParticipantesConcursos
-                .FirstOrDefaultAsync(p => p.idUsuario == idUsuarioLogueado && p.idConcurso == concurso.idConcurso);
-
-            if (participacionExistente != null)
-            {
-                if (participacionExistente.estado == "Activo")
-                    return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
-
-                participacionExistente.estado = "Activo";
-                participacionExistente.fechaIngreso = ahora;
-                await _context.SaveChangesAsync();
-                return Ok(new { mensaje = "Te has vuelto a inscribir al concurso.", codConcurso = concurso.codigo });
-            }
-
-            var nuevaParticipacion = new ParticipanteConcurso
-            {
-                idUsuario = idUsuarioLogueado,
-                idConcurso = concurso.idConcurso,
-                fechaIngreso = ahora,
-                estado = "Activo"
-            };
-
-            _context.ParticipantesConcursos.Add(nuevaParticipacion);
-
-            try
-            {
-                await _context.SaveChangesAsync();
-                return Ok(new { mensaje = "Te has inscrito al concurso exitosamente.", codConcurso = concurso.codigo });
-            }
-            catch (DbUpdateException)
-            {
-                return Ok(new { mensaje = "Ya estás inscrito en este concurso.", codConcurso = concurso.codigo });
-            }
-        }
 
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpGet("mis-creados")]
@@ -861,6 +792,115 @@ namespace UPDSjudgeB.Controllers
         {
             using var reader = new StreamReader(entrada.Open());
             return await reader.ReadToEndAsync();
+        }
+        [Authorize(Roles = "Usuario")]
+        [HttpGet("dashboard/{codigo}")]
+        public async Task<IActionResult> Dashboard(string codigo)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+
+            codigo = codigo?.Trim().ToLowerInvariant();
+
+            if (string.IsNullOrWhiteSpace(codigo))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            var crudo = await _context.Concursos
+                .Where(c => c.codigo == codigo && c.estado == "Activo")
+                .Select(c => new
+                {
+                    c.idConcurso,
+                    c.codigo,
+                    c.nombre,
+                    c.contrasena,
+                    c.fechaInicio,
+                    c.duracionMinutos,
+                    c.minutosCongelamiento,
+                    c.urlSetProblemas,
+                    c.idUsuarioCreador,
+                    cantidadParticipantes = c.Participantes.Count(p => p.estado == "Activo"),
+                    yaInscrito = c.Participantes.Any(p =>
+                        p.idUsuario == idUsuarioLogueado && p.estado == "Activo"),
+                    problemas = c.Problemas
+                        .Where(p => p.estado == "Activo")
+                        .OrderBy(p => p.inciso)
+                        .Select(p => new { p.idProblema, p.inciso, p.titulo, p.tiempo, p.memoria })
+                        .ToList()
+                })
+                .FirstOrDefaultAsync();
+
+            if (crudo == null)
+                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+
+            var ahora = DateTime.UtcNow;
+            var fechaFin = crudo.fechaInicio.AddMinutes(crudo.duracionMinutos);
+
+            string estadoTiempo = ahora < crudo.fechaInicio ? "Proximo"
+                : ahora < fechaFin ? "Activo" : "Finalizado";
+
+            bool esPrivado = !string.IsNullOrWhiteSpace(crudo.contrasena);
+            bool esCreador = crudo.idUsuarioCreador == idUsuarioLogueado;
+
+            bool puedeVer = estadoTiempo != "Proximo" && (!esPrivado || crudo.yaInscrito || esCreador);
+            if (!puedeVer)
+                return BadRequest(new { mensaje = "Todavía no puedes ver el dashboard de este concurso." });
+
+            var idsProblemas = crudo.problemas.Select(p => p.idProblema).ToList();
+
+            var envios = await _context.Envios
+                .Where(e => e.idUsuario == idUsuarioLogueado && idsProblemas.Contains(e.idProblema))
+                .OrderByDescending(e => e.fechaEnvio)
+                .Select(e => new { e.idProblema, e.resultado, e.fechaEnvio })
+                .ToListAsync();
+
+            var enviosPorProblema = envios
+                .GroupBy(e => e.idProblema)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var problemasDto = crudo.problemas.Select(p =>
+            {
+                bool tieneEnvios = enviosPorProblema.TryGetValue(p.idProblema, out var listaEnvios);
+                int intentos = tieneEnvios ? listaEnvios!.Count : 0;
+
+                bool aceptado = tieneEnvios && listaEnvios!.Any(e => e.resultado == VeredictosEnvio.Aceptado);
+
+                string estado = intentos == 0
+                    ? "Sin intentar"
+                    : aceptado
+                        ? VeredictosEnvio.Aceptado
+                        : listaEnvios![0].resultado; // el más reciente, ya viene ordenado desc
+
+                return new ProblemaDashboardItemDto
+                {
+                    inciso = p.inciso,
+                    titulo = p.titulo,
+                    tiempo = p.tiempo,
+                    memoria = p.memoria,
+                    intentos = intentos,
+                    estado = estado,
+                    resuelto = aceptado
+                };
+            }).ToList();
+
+            return Ok(new ConcursoDashboardDto
+            {
+                codigo = crudo.codigo,
+                nombre = crudo.nombre,
+                estadoTiempo = estadoTiempo,
+                cantidadParticipantes = crudo.cantidadParticipantes,
+                fechaFin = fechaFin,
+                minutosCongelamiento = crudo.minutosCongelamiento,
+                segundosRestantes = estadoTiempo == "Activo"
+                    ? (int)Math.Max(0, (fechaFin - ahora).TotalSeconds)
+                    : null,
+                urlSetProblemas = crudo.urlSetProblemas,
+                problemasResueltos = problemasDto.Count(p => p.resuelto),
+                totalProblemas = problemasDto.Count,
+                intentosTotales = problemasDto.Sum(p => p.intentos),
+                problemas = problemasDto
+            });
         }
     }
 
