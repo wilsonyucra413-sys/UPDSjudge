@@ -102,7 +102,7 @@ namespace UPDSjudgeB.Controllers
                 datos = envios
             });
         }
-        private const int LONGITUD_MAXIMA_CODIGO = 100_000; 
+        private const int LONGITUD_MAXIMA_CODIGO = 100_000;
 
         [Authorize(Roles = "Usuario")]
         [HttpPost]
@@ -113,7 +113,6 @@ namespace UPDSjudgeB.Controllers
                 return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
 
-            // 1. Validaciones básicas del payload
             if (string.IsNullOrWhiteSpace(dto.codigoFuente))
                 return BadRequest(new { mensaje = "El código fuente es obligatorio." });
 
@@ -123,28 +122,34 @@ namespace UPDSjudgeB.Controllers
             if (string.IsNullOrWhiteSpace(dto.extension))
                 return BadRequest(new { mensaje = "Debes indicar el lenguaje del código (extensión)." });
 
-            string extensionNormalizada = dto.extension.Trim().ToLowerInvariant();
-            if (!extensionNormalizada.StartsWith("."))
-                extensionNormalizada = "." + extensionNormalizada;
+            string extensionNormalizada = dto.extension.Trim().ToLowerInvariant().TrimStart('.');
 
-            // 2. Buscar el lenguaje por extensión
             var lenguaje = await _context.Lenguajes
                 .FirstOrDefaultAsync(l => l.extension == extensionNormalizada && l.estado == "Activo");
 
             if (lenguaje == null)
-                return BadRequest(new { mensaje = $"El lenguaje con extensión '{extensionNormalizada}' no está soportado." });
+                return BadRequest(new { mensaje = $"El lenguaje con extensión '.{extensionNormalizada}' no está soportado." });
 
-            // 3. Buscar el problema y su concurso en la misma consulta
+            if (string.IsNullOrWhiteSpace(dto.codigo))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            string codigoConcurso = dto.codigo.Trim().ToLowerInvariant();
+            char incisoNormalizado = char.ToUpperInvariant(dto.inciso);
+
+            // Buscamos el concurso primero, luego el problema dentro de él por inciso
+            var concurso = await _context.Concursos
+                .FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
+
+            if (concurso == null)
+                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+
             var problema = await _context.Problemas
-                .Include(p => p.Concurso)
-                .FirstOrDefaultAsync(p => p.idProblema == dto.idProblema && p.estado == "Activo");
+                .FirstOrDefaultAsync(p => p.idConcurso == concurso.idConcurso
+                                        && p.inciso == incisoNormalizado
+                                        && p.estado == "Activo");
 
             if (problema == null)
-                return NotFound(new { mensaje = "El problema no existe o fue eliminado." });
-
-            var concurso = problema.Concurso;
-            if (concurso == null || concurso.estado != "Activo")
-                return NotFound(new { mensaje = "El concurso asociado no existe o fue eliminado." });
+                return NotFound(new { mensaje = $"No existe el problema con inciso '{incisoNormalizado}' en este concurso." });
 
             var ahora = DateTime.UtcNow;
             var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
@@ -152,7 +157,6 @@ namespace UPDSjudgeB.Controllers
             string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
                 : ahora < fechaFin ? "Activo" : "Finalizado";
 
-            // 4. No se puede enviar antes de que inicie el concurso
             if (estadoTiempo == "Proximo")
                 return BadRequest(new { mensaje = "El concurso todavía no ha iniciado." });
 
@@ -164,9 +168,6 @@ namespace UPDSjudgeB.Controllers
                             && p.idConcurso == concurso.idConcurso
                             && p.estado == "Activo");
 
-            // 5. Reglas de acceso: inscrito o creador entran directo.
-            // Si no, solo se permite en modo upsolving (concurso ya finalizado),
-            // y si es privado, pidiendo la contraseña en este mismo envío.
             if (!yaInscrito && !esCreador)
             {
                 if (estadoTiempo != "Finalizado")
@@ -182,10 +183,8 @@ namespace UPDSjudgeB.Controllers
                 }
             }
 
-            // 6. Determinar si este envío es upsolving (no afecta ranking)
             bool esUpsolving = ahora >= fechaFin;
 
-            // 7. Guardar el envío. El veredicto se calcula después (Judge0 pendiente).
             var nuevoEnvio = new Envio
             {
                 codigo = dto.codigoFuente,
@@ -210,7 +209,7 @@ namespace UPDSjudgeB.Controllers
                 upsolving = esUpsolving
             });
         }
-        
+
 
     }
 }

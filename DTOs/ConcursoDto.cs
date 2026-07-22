@@ -126,7 +126,6 @@ namespace UPDSjudgeB.DTOs
         public int total { get; set; }
         public int pagina { get; set; }
         public int tamanoPagina { get; set; }
-        public ResumenConteoDto resumen { get; set; }
         public List<ConcursoAdminItemDto> concursos { get; set; }
     }
 }

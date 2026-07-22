@@ -330,6 +330,29 @@ namespace UPDSjudgeB.Controllers
                     item.miProblemasResueltos = cantidad;
             }
         }
+        [Authorize(Roles = "AdministradorConcursos")]
+        [HttpGet("mis-resumen")]
+        public async Task<IActionResult> GetMisResumen()
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+            var ahora = DateTime.UtcNow;
+            IQueryable<Concurso> queryBase = _context.Concursos
+                .Where(c => c.estado == "Activo" && c.idUsuarioCreador == idUsuarioLogueado);
+
+            var resumen = new ResumenConteoDto
+            {
+                activos = await queryBase.CountAsync(c =>
+                    ahora >= c.fechaInicio && ahora < c.fechaInicio.AddMinutes(c.duracionMinutos)),
+                proximos = await queryBase.CountAsync(c => ahora < c.fechaInicio),
+                finalizados = await queryBase.CountAsync(c =>
+                    ahora >= c.fechaInicio.AddMinutes(c.duracionMinutos))
+            };
+
+            return Ok(resumen);
+        }
         [Authorize(Roles = "Usuario")]
         [HttpGet("detalle/{codigo}")]
         public async Task<IActionResult> Detalle(string codigo)
@@ -715,18 +738,6 @@ namespace UPDSjudgeB.Controllers
                     queryBase = queryBase.Where(c => c.contrasena == null || c.contrasena == "");
             }
 
-            // El resumen de conteos se calcula sobre queryBase (respeta busqueda/modalidad,
-            // pero NO el filtro de pestaña — así el usuario ve "cuántos hay en cada estado"
-            // sin importar en cuál pestaña esté parado ahora mismo)
-            var resumen = new ResumenConteoDto
-            {
-                activos = await queryBase.CountAsync(c =>
-                    ahora >= c.fechaInicio && ahora < c.fechaInicio.AddMinutes(c.duracionMinutos)),
-                proximos = await queryBase.CountAsync(c => ahora < c.fechaInicio),
-                finalizados = await queryBase.CountAsync(c =>
-                    ahora >= c.fechaInicio.AddMinutes(c.duracionMinutos))
-            };
-
             // A partir de aquí sí aplicamos el filtro de pestaña, para la lista paginada
             IQueryable<Concurso> query = filtro?.ToLowerInvariant() switch
             {
@@ -766,6 +777,7 @@ namespace UPDSjudgeB.Controllers
                 string estadoTiempo = ahora < c.fechaInicio ? "Proximo"
                     : ahora < fechaFin ? "Activo" : "Finalizado";
 
+
                 return new ConcursoAdminItemDto
                 {
                     codigo = c.codigo,
@@ -784,7 +796,6 @@ namespace UPDSjudgeB.Controllers
                 total = total,
                 pagina = pagina,
                 tamanoPagina = tamanoPagina,
-                resumen = resumen,
                 concursos = paginaDatos
             });
         }
