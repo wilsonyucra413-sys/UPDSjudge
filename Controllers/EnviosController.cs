@@ -209,7 +209,7 @@ namespace UPDSjudgeB.Controllers
                 upsolving = esUpsolving
             });
         }
-
+        
 
     }
 }
