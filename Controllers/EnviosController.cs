@@ -102,6 +102,90 @@ namespace UPDSjudgeB.Controllers
                 datos = envios
             });
         }
+        
+        [Authorize(Roles = "Usuario")]
+        [HttpGet("concurso/{concursoCodigo}")]
+        public async Task<IActionResult> ListarMisEnviosDeConcurso(
+            string concursoCodigo,
+            [FromQuery] string? resultado = null, //"AC""WA""TLE""MLE""CE""RE"
+            [FromQuery] string? inciso = null,
+            [FromQuery] int pagina = 1,
+            [FromQuery] int tamanoPagina = 20)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null) return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+        
+            if (string.IsNullOrWhiteSpace(concursoCodigo))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio" });
+        
+            concursoCodigo = concursoCodigo.Trim().ToLowerInvariant();
+        
+            if (pagina < 1) pagina = 1;
+            if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 20;
+        
+            bool concursoExiste = await _context.Concursos
+                .AnyAsync(c => c.codigo == concursoCodigo && c.estado == "Activo");
+        
+            if (!concursoExiste)
+                return NotFound(new { mensaje = "Concurso no encontrado o no está activo" });
+        
+            var query = _context.Envios
+                .Include(e => e.Problema)
+                    .ThenInclude(p => p.Concurso)
+                .Include(e => e.Lenguaje)
+                .Where(e => e.idUsuario == idUsuarioLogueado
+                    && e.Problema.Concurso.codigo == concursoCodigo
+                    && e.Problema.Concurso.estado == "Activo");
+        
+            if (!string.IsNullOrWhiteSpace(resultado))
+            {
+                string veredictoBusqueda = resultado.ToUpper() switch
+                {
+                    "AC" => VeredictosEnvio.Aceptado,
+                    "WA" => VeredictosEnvio.RespuestaIncorrecta,
+                    "TLE" => VeredictosEnvio.TiempoExcedido,
+                    "MLE" => VeredictosEnvio.MemoriaExcedida,
+                    "CE" => VeredictosEnvio.ErrorCompilacion,
+                    "RE" => VeredictosEnvio.ErrorEjecucion,
+                    _ => resultado
+                };
+                query = query.Where(e => e.resultado == veredictoBusqueda);
+            }
+        
+            if (!string.IsNullOrWhiteSpace(inciso))
+            {
+                char incisoChar = inciso.Trim().ToUpper()[0];
+                query = query.Where(e => e.Problema.inciso == incisoChar);
+            }
+        
+            var total = await query.CountAsync();
+            var envios = await query
+                .OrderByDescending(e => e.fechaEnvio)
+                .Skip((pagina - 1) * tamanoPagina)
+                .Take(tamanoPagina)
+                .Select(e => new
+                {
+                    e.idEnvio,
+                    concursoCodigo = e.Problema.Concurso.codigo,
+                    problemaTitulo = e.Problema.titulo,
+                    inciso = e.Problema.inciso.ToString(),
+                    lenguaje = e.Lenguaje.nombre,
+                    veredicto = e.resultado,
+                    consumoTiempo = e.tiempo,
+                    consumoMemoria = e.memoria,
+                    fechaEnvio = e.fechaEnvio
+                })
+                .ToListAsync();
+        
+            return Ok(new
+            {
+                total,
+                pagina,
+                tamanoPagina,
+                datos = envios
+            });
+        }
         private const int LONGITUD_MAXIMA_CODIGO = 100_000;
 
         [Authorize(Roles = "Usuario")]
