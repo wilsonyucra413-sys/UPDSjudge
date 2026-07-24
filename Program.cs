@@ -78,7 +78,15 @@ builder.Services.AddAuthentication(options =>
         ClockSkew = TimeSpan.Zero
     };
 });
+builder.Services.AddHttpClient<UPDSjudgeB.Services.IJudge0Service, UPDSjudgeB.Services.Judge0Service>(client =>
+{
+    var judge0BaseUrl = builder.Configuration["Judge0:BaseUrl"]
+        ?? throw new InvalidOperationException("Falta configurar Judge0:BaseUrl en appsettings.json");
+    client.BaseAddress = new Uri(judge0BaseUrl.TrimEnd('/') + "/");
+    client.Timeout = TimeSpan.FromSeconds(30); // Judge0 con wait=true puede tardar
+});
 
+builder.Services.AddScoped<UPDSjudgeB.Services.IEvaluacionEnvioService, UPDSjudgeB.Services.EvaluacionEnvioService>();
 // Habilitar autorización basada en roles ([Authorize], [Authorize(Roles="...")])
 builder.Services.AddAuthorization();
 

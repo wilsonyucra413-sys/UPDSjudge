@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using UPDSjudgeB.data;
 using UPDSjudgeB.DTOs;
 using UPDSjudgeB.Models;
+using UPDSjudgeB.Services;
 namespace UPDSjudgeB.Controllers
 {
     [ApiController]
@@ -16,9 +17,11 @@ namespace UPDSjudgeB.Controllers
     {
 
         private readonly ApplicationDbContext _context;
-        public EnviosController(ApplicationDbContext context)
+        private readonly IEvaluacionEnvioService _evaluacionService;
+        public EnviosController(ApplicationDbContext context, IEvaluacionEnvioService evaluacionService)
         {
             _context = context;
+            _evaluacionService = evaluacionService;
         }
         // • Accepted
         // • Wrong Answer
@@ -102,7 +105,7 @@ namespace UPDSjudgeB.Controllers
                 datos = envios
             });
         }
-        
+
         [Authorize(Roles = "Usuario")]
         [HttpGet("concurso/{concursoCodigo}")]
         public async Task<IActionResult> ListarMisEnviosDeConcurso(
@@ -115,21 +118,21 @@ namespace UPDSjudgeB.Controllers
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
             if (userIdClaim == null) return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
-        
+
             if (string.IsNullOrWhiteSpace(concursoCodigo))
                 return BadRequest(new { mensaje = "El código del concurso es obligatorio" });
-        
+
             concursoCodigo = concursoCodigo.Trim().ToLowerInvariant();
-        
+
             if (pagina < 1) pagina = 1;
             if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 20;
-        
+
             bool concursoExiste = await _context.Concursos
                 .AnyAsync(c => c.codigo == concursoCodigo && c.estado == "Activo");
-        
+
             if (!concursoExiste)
                 return NotFound(new { mensaje = "Concurso no encontrado o no está activo" });
-        
+
             var query = _context.Envios
                 .Include(e => e.Problema)
                     .ThenInclude(p => p.Concurso)
@@ -137,7 +140,7 @@ namespace UPDSjudgeB.Controllers
                 .Where(e => e.idUsuario == idUsuarioLogueado
                     && e.Problema.Concurso.codigo == concursoCodigo
                     && e.Problema.Concurso.estado == "Activo");
-        
+
             if (!string.IsNullOrWhiteSpace(resultado))
             {
                 string veredictoBusqueda = resultado.ToUpper() switch
@@ -152,13 +155,13 @@ namespace UPDSjudgeB.Controllers
                 };
                 query = query.Where(e => e.resultado == veredictoBusqueda);
             }
-        
+
             if (!string.IsNullOrWhiteSpace(inciso))
             {
                 char incisoChar = inciso.Trim().ToUpper()[0];
                 query = query.Where(e => e.Problema.inciso == incisoChar);
             }
-        
+
             var total = await query.CountAsync();
             var envios = await query
                 .OrderByDescending(e => e.fechaEnvio)
@@ -177,7 +180,7 @@ namespace UPDSjudgeB.Controllers
                     fechaEnvio = e.fechaEnvio
                 })
                 .ToListAsync();
-        
+
             return Ok(new
             {
                 total,
@@ -200,40 +203,27 @@ namespace UPDSjudgeB.Controllers
             if (string.IsNullOrWhiteSpace(dto.codigoFuente))
                 return BadRequest(new { mensaje = "El código fuente es obligatorio." });
 
-            if (dto.codigoFuente.Length > LONGITUD_MAXIMA_CODIGO)
-                return BadRequest(new { mensaje = $"El código fuente no puede superar los {LONGITUD_MAXIMA_CODIGO / 1000} KB." });
-
-            if (string.IsNullOrWhiteSpace(dto.extension))
-                return BadRequest(new { mensaje = "Debes indicar el lenguaje del código (extensión)." });
-
-            string extensionNormalizada = dto.extension.Trim().ToLowerInvariant().TrimStart('.');
-
-            var lenguaje = await _context.Lenguajes
-                .FirstOrDefaultAsync(l => l.extension == extensionNormalizada && l.estado == "Activo");
-
-            if (lenguaje == null)
-                return BadRequest(new { mensaje = $"El lenguaje con extensión '.{extensionNormalizada}' no está soportado." });
-
-            if (string.IsNullOrWhiteSpace(dto.codigo))
+            if (string.IsNullOrWhiteSpace(dto.codigoConcurso))
                 return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
 
-            string codigoConcurso = dto.codigo.Trim().ToLowerInvariant();
-            char incisoNormalizado = char.ToUpperInvariant(dto.inciso);
+            string codigoConcurso = dto.codigoConcurso.Trim().ToLowerInvariant();
+            char inciso = char.ToUpperInvariant(dto.incisoProblema);
 
-            // Buscamos el concurso primero, luego el problema dentro de él por inciso
+            // Paso 1: validar concurso
             var concurso = await _context.Concursos
                 .FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
 
             if (concurso == null)
                 return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
 
+            // Paso 2: validar problema por concurso + inciso
             var problema = await _context.Problemas
                 .FirstOrDefaultAsync(p => p.idConcurso == concurso.idConcurso
-                                        && p.inciso == incisoNormalizado
+                                        && p.inciso == inciso
                                         && p.estado == "Activo");
 
             if (problema == null)
-                return NotFound(new { mensaje = $"No existe el problema con inciso '{incisoNormalizado}' en este concurso." });
+                return NotFound(new { mensaje = $"No existe el problema con inciso '{inciso}' en este concurso." });
 
             var ahora = DateTime.UtcNow;
             var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
@@ -269,31 +259,22 @@ namespace UPDSjudgeB.Controllers
 
             bool esUpsolving = ahora >= fechaFin;
 
-            var nuevoEnvio = new Envio
+            try
             {
-                codigo = dto.codigoFuente,
-                resultado = "Pendiente",
-                tiempo = 0,
-                memoria = 0,
-                token = null,
-                upsolving = esUpsolving ? "Si" : "No",
-                fechaEnvio = ahora,
-                idUsuario = idUsuarioLogueado,
-                idProblema = problema.idProblema,
-                idLenguaje = lenguaje.idLenguaje
-            };
+                var resultado = await _evaluacionService.EvaluarYGuardarAsync(
+                    problema.idProblema, dto.idLenguaje, dto.codigoFuente,
+                    idUsuarioLogueado, esUpsolving);
 
-            _context.Envios.Add(nuevoEnvio);
-            await _context.SaveChangesAsync();
-
-            return Ok(new
+                return Ok(resultado);
+            }
+            catch (Judge0NoDisponibleException ex)
             {
-                idEnvio = nuevoEnvio.idEnvio,
-                mensaje = "Envío registrado, en espera de evaluación.",
-                upsolving = esUpsolving
-            });
+                return StatusCode(503, new { mensaje = "El motor de ejecución no está disponible en este momento.", detalle = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { mensaje = ex.Message });
+            }
         }
-        
-
     }
 }

@@ -8,10 +8,20 @@ namespace UPDSjudgeB.DTOs
 
     public class CrearEnvioDto
     {
-        public string codigo { get; set; }
-        public char inciso { get; set; }
-        public string extension { get; set; }
+        public string codigoConcurso { get; set; }
+        public char incisoProblema { get; set; }
+        public int idLenguaje { get; set; }
         public string codigoFuente { get; set; }
-        public string? contrasena { get; set; }
+        public string? contrasena { get; set; } // solo si upsolving en concurso privado sin inscripción
+    }
+
+    public class EnvioResultadoDto
+    {
+        public int idEnvio { get; set; }
+        public string veredicto { get; set; }
+        public float tiempo { get; set; }
+        public int memoria { get; set; }
+        public bool upsolving { get; set; }
+        public string? detalle { get; set; } // ej: primer caso de prueba que falló
     }
 }
