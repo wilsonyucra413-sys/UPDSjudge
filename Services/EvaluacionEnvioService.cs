@@ -14,11 +14,14 @@ namespace UPDSjudgeB.Services
         private readonly ApplicationDbContext _context;
         private readonly IJudge0Service _judge0;
 
-        // Status IDs de Judge0 que representan un problema de compilación/ejecución,
-        // sin necesidad de comparar stdout
-        private const int JUDGE0_STATUS_COMPILATION_ERROR = 6;
+        // Status IDs de Judge0 CE v1.13.1
+        private const int JUDGE0_STATUS_ACCEPTED = 3;
+        private const int JUDGE0_STATUS_WRONG_ANSWER = 4;
         private const int JUDGE0_STATUS_TIME_LIMIT_EXCEEDED = 5;
-        // 7 al 12 son variantes de Runtime Error
+        private const int JUDGE0_STATUS_COMPILATION_ERROR = 6;
+        // 7 al 12 = variantes de Runtime Error (incluye 11 = NZEC)
+        private const int JUDGE0_STATUS_RUNTIME_ERROR_MIN = 7;
+        private const int JUDGE0_STATUS_RUNTIME_ERROR_MAX = 12;
 
         public EvaluacionEnvioService(ApplicationDbContext context, IJudge0Service judge0)
         {
@@ -50,7 +53,7 @@ namespace UPDSjudgeB.Services
             if (!casosPrueba.Any())
                 throw new InvalidOperationException("Este problema no tiene casos de prueba configurados.");
 
-            int memoryLimitKb = problema.memoria * 1024; // asumiendo problema.memoria en MB
+            int memoryLimitKb = problema.memoria * 1024;
 
             string veredictoFinal = VeredictosEnvio.Aceptado;
             float tiempoMaximo = 0;
@@ -58,7 +61,6 @@ namespace UPDSjudgeB.Services
             string? ultimoToken = null;
             string? detalleFallo = null;
 
-            // Fail-fast: se detiene en el primer caso que no pase
             foreach (var caso in casosPrueba)
             {
                 Judge0SubmissionResponseDto resultado;
@@ -70,8 +72,6 @@ namespace UPDSjudgeB.Services
                 }
                 catch (Judge0NoDisponibleException)
                 {
-                    // Si Judge0 no responde, no debe guardarse un veredicto falso.
-                    // Se relanza para que el controller devuelva un 503 explícito.
                     throw;
                 }
 
@@ -83,52 +83,73 @@ namespace UPDSjudgeB.Services
                 tiempoMaximo = Math.Max(tiempoMaximo, tiempoCaso);
                 memoriaMaxima = Math.Max(memoriaMaxima, memoriaCaso);
 
-                // 1. Error de compilación
-                if (!string.IsNullOrWhiteSpace(resultado.CompileOutput))
+                int statusId = resultado.Status?.Id ?? -1;
+
+                // 1. Compilation Error — SOLO por status.id == 6, nunca por compile_output
+                //    (GCC puede meter warnings en compile_output aunque el código compile bien)
+                if (statusId == JUDGE0_STATUS_COMPILATION_ERROR)
                 {
                     veredictoFinal = VeredictosEnvio.ErrorCompilacion;
-                    detalleFallo = resultado.CompileOutput;
+                    detalleFallo = resultado.CompileOutput ?? "Error de compilación.";
                     break;
                 }
 
-                // 2. Time Limit Exceeded reportado directo por Judge0
-                if (resultado.Status.Id == JUDGE0_STATUS_TIME_LIMIT_EXCEEDED)
+                // 2. Time Limit Exceeded
+                if (statusId == JUDGE0_STATUS_TIME_LIMIT_EXCEEDED)
                 {
                     veredictoFinal = VeredictosEnvio.TiempoExcedido;
                     detalleFallo = $"Caso #{caso.idCasoPrueba}: tiempo excedido.";
                     break;
                 }
 
-                // 3. Runtime Error (statuses 7 al 12 en Judge0)
-                if (resultado.Status.Id >= 7 && resultado.Status.Id <= 12)
+                // 3. Runtime Error (7-12, incluye NZEC=11, bad_alloc cae aquí también)
+                if (statusId >= JUDGE0_STATUS_RUNTIME_ERROR_MIN && statusId <= JUDGE0_STATUS_RUNTIME_ERROR_MAX)
                 {
                     veredictoFinal = VeredictosEnvio.ErrorEjecucion;
                     detalleFallo = resultado.Stderr ?? resultado.Message ?? "Error en tiempo de ejecución.";
                     break;
                 }
 
-                // 4. Memory Limit Exceeded — Judge0 CE normalmente lo reporta como
-                // Runtime Error (SIGSEGV/SIGABRT) más que con un status propio,
-                // así que se detecta comparando memoria usada vs límite del problema.
+                // 4. Memory Limit Exceeded — SIEMPRE se revisa por comparación real,
+                //    sin importar qué status haya devuelto Judge0. Esto cubre el caso
+                //    donde el proceso sí terminó dentro del status "Accepted" o similar
+                //    pero excedió memoria de forma silenciosa.
                 if (memoriaCaso > memoryLimitKb)
                 {
                     veredictoFinal = VeredictosEnvio.MemoriaExcedida;
-                    detalleFallo = $"Caso #{caso.idCasoPrueba}: memoria excedida.";
+                    detalleFallo = $"Caso #{caso.idCasoPrueba}: memoria excedida ({memoriaCaso} KB > {memoryLimitKb} KB).";
                     break;
                 }
 
-                // 5. Comparación real de salida — NUNCA confiar solo en status "Accepted"
-                string salidaObtenida = (resultado.Stdout ?? string.Empty).Trim();
-                string salidaEsperada = (caso.salida ?? string.Empty).Trim();
+                // 5. Ejecución correcta (status 3) -> comparar salida real
+                if (statusId == JUDGE0_STATUS_ACCEPTED)
+                {
+                    string salidaObtenida = (resultado.Stdout ?? string.Empty).TrimEnd('\n', '\r').Trim();
+                    string salidaEsperada = (caso.salida ?? string.Empty).TrimEnd('\n', '\r').Trim();
 
-                if (!string.Equals(salidaObtenida, salidaEsperada, StringComparison.Ordinal))
+                    if (!string.Equals(salidaObtenida, salidaEsperada, StringComparison.Ordinal))
+                    {
+                        veredictoFinal = VeredictosEnvio.RespuestaIncorrecta;
+                        detalleFallo = $"Caso #{caso.idCasoPrueba}: salida no coincide.";
+                        break;
+                    }
+                    // Este caso pasó, continúa al siguiente
+                    continue;
+                }
+
+                // 6. status.id == 4 (Wrong Answer directo de Judge0) u otros no contemplados
+                if (statusId == JUDGE0_STATUS_WRONG_ANSWER)
                 {
                     veredictoFinal = VeredictosEnvio.RespuestaIncorrecta;
-                    detalleFallo = $"Caso #{caso.idCasoPrueba}: salida no coincide.";
+                    detalleFallo = $"Caso #{caso.idCasoPrueba}: respuesta incorrecta.";
                     break;
                 }
 
-                // Este caso pasó, sigue al siguiente. Si todos pasan, queda "Aceptado".
+                // 7. Cualquier otro status.id no contemplado explícitamente (13 Internal Error,
+                //    14 Exec Format Error, o -1 si no vino status) — no asumimos Aceptado
+                veredictoFinal = VeredictosEnvio.ErrorEjecucion;
+                detalleFallo = $"Caso #{caso.idCasoPrueba}: estado inesperado de Judge0 (id={statusId}, \"{resultado.Status?.Description}\").";
+                break;
             }
 
             var nuevoEnvio = new Envio

@@ -23,7 +23,7 @@ namespace UPDSjudgeB.DTOs
             public float CpuTimeLimit { get; set; }
 
             [JsonPropertyName("memory_limit")]
-            public int MemoryLimit { get; set; } // en KB
+            public int MemoryLimit { get; set; }
         }
 
         public class Judge0StatusDto
@@ -32,7 +32,7 @@ namespace UPDSjudgeB.DTOs
             public int Id { get; set; }
 
             [JsonPropertyName("description")]
-            public string Description { get; set; }
+            public string? Description { get; set; }
         }
 
         public class Judge0SubmissionResponseDto
@@ -56,10 +56,10 @@ namespace UPDSjudgeB.DTOs
             public int? Memory { get; set; }
 
             [JsonPropertyName("token")]
-            public string Token { get; set; }
+            public string? Token { get; set; }
 
             [JsonPropertyName("status")]
-            public Judge0StatusDto Status { get; set; }
+            public Judge0StatusDto? Status { get; set; }
         }
     }
 }

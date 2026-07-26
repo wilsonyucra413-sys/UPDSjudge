@@ -12,7 +12,7 @@ namespace UPDSjudgeB.DTOs
         public char incisoProblema { get; set; }
         public int idLenguaje { get; set; }
         public string codigoFuente { get; set; }
-        public string? contrasena { get; set; } // solo si upsolving en concurso privado sin inscripción
+        public string? contrasena { get; set; } 
     }
 
     public class EnvioResultadoDto
@@ -22,6 +22,6 @@ namespace UPDSjudgeB.DTOs
         public float tiempo { get; set; }
         public int memoria { get; set; }
         public bool upsolving { get; set; }
-        public string? detalle { get; set; } // ej: primer caso de prueba que falló
+        public string? detalle { get; set; } 
     }
 }

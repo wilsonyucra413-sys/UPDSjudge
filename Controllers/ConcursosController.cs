@@ -23,6 +23,7 @@ namespace UPDSjudgeB.Controllers
         {
             _context = context;
         }
+
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpPost("crear")]
         [RequestSizeLimit(100 * 1024 * 1024)] // 100 MB
@@ -913,6 +914,489 @@ namespace UPDSjudgeB.Controllers
                 problemas = problemasDto
             });
         }
+        [Authorize(Roles = "AdministradorConcursos")]
+        [HttpPut("{codigo}")]
+        [RequestSizeLimit(100 * 1024 * 1024)]
+        [RequestFormLimits(MultipartBodyLengthLimit = 100 * 1024 * 1024)]
+        public async Task<IActionResult> Actualizar(string codigo, [FromForm] ActualizarConcursoDto dto)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+
+            codigo = codigo?.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(codigo))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            var concurso = await _context.Concursos
+                .Include(c => c.Problemas)
+                .FirstOrDefaultAsync(c => c.codigo == codigo && c.estado == "Activo");
+
+            if (concurso == null)
+                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+
+            if (concurso.idUsuarioCreador != idUsuarioLogueado)
+                return BadRequest(new { mensaje = "Solo el creador del concurso puede modificarlo." });
+
+            var ahora = DateTime.UtcNow;
+            var fechaFinActual = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
+                : ahora < fechaFinActual ? "Activo" : "Finalizado";
+
+            if (estadoTiempo != "Proximo")
+                return BadRequest(new { mensaje = "Solo se pueden editar concursos que todavía no han iniciado." });
+
+            dto.fechaInicio = dto.fechaInicio.Kind switch
+            {
+                DateTimeKind.Utc => dto.fechaInicio,
+                DateTimeKind.Local => dto.fechaInicio.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(dto.fechaInicio, DateTimeKind.Utc)
+            };
+
+            var (dtoValido, mensajeDto) = ValidarDatosActualizacion(dto);
+            if (!dtoValido)
+                return BadRequest(new { mensaje = mensajeDto });
+
+            // Los problemas existentes (activos) del concurso, en la BD
+            var problemasExistentes = await _context.Problemas
+                .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
+                .ToListAsync();
+
+            var incisosExistentes = problemasExistentes
+                .Select(p => char.ToUpperInvariant(p.inciso))
+                .ToHashSet();
+            var incisosEnviados = dto.listaProblemas.Select(p => char.ToUpperInvariant(p.inciso)).ToHashSet();
+
+            // No se permite agregar ni quitar problemas — debe ser exactamente el mismo conjunto
+            var sobrantes = incisosEnviados.Except(incisosExistentes).ToList();
+            if (sobrantes.Any())
+                return BadRequest(new { mensaje = $"No se pueden agregar problemas nuevos: {string.Join(", ", sobrantes)}" });
+
+            var faltantes = incisosExistentes.Except(incisosEnviados).ToList();
+            if (faltantes.Any())
+                return BadRequest(new { mensaje = $"Faltan problemas existentes en la solicitud: {string.Join(", ", faltantes)}" });
+
+            // Validar estructura del ZIP igual que en Crear, pero como ActualizarProblemaDto
+            // no tiene el mismo tipo que CrearProblemaDto, adaptamos la lista para reutilizar
+            // el método existente sin duplicar su lógica interna.
+            var listaProblemasComoCrear = dto.listaProblemas
+                .Select(p => new CrearProblemaDto { inciso = p.inciso, titulo = p.titulo, tiempo = p.tiempo, memoria = p.memoria })
+                .ToList();
+
+            var (estructuraValida, mensajeEstructura, mapaCarpetas) =
+                await ValidarEstructuraZipAsync(dto.archivoZip, listaProblemasComoCrear);
+            if (!estructuraValida)
+                return BadRequest(new { mensaje = mensajeEstructura });
+
+            // Validar que la CANTIDAD de casos de prueba por inciso coincida exactamente
+            // con la cantidad ya existente en la BD — no se permite agregar ni quitar casos
+            foreach (var problema in problemasExistentes)
+            {
+                string clave = problema.inciso.ToString().ToUpperInvariant();
+                int cantidadExistente = await _context.CasosPrueba
+                    .CountAsync(c => c.idProblema == problema.idProblema && c.estado == "Activo");
+
+                int cantidadEnviada = mapaCarpetas.ContainsKey(clave) ? mapaCarpetas[clave].Count : 0;
+
+                if (cantidadEnviada != cantidadExistente)
+                {
+                    return BadRequest(new
+                    {
+                        mensaje = $"El problema '{clave}' tiene {cantidadExistente} casos de prueba registrados, " +
+                                  $"pero el ZIP trae {cantidadEnviada}. No se puede cambiar la cantidad de casos de prueba, " +
+                                  $"solo su contenido."
+                    });
+                }
+            }
+
+            var (casosValidos, mensajeCasos, casosPorInciso) =
+                await ValidarCasosPruebaAsync(dto.archivoZip, mapaCarpetas);
+            if (!casosValidos)
+                return BadRequest(new { mensaje = mensajeCasos });
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // 1. Actualizar datos generales del concurso
+                concurso.nombre = dto.nombre;
+                concurso.descripcion = dto.descripcion;
+                concurso.fechaInicio = dto.fechaInicio;
+                concurso.duracionMinutos = dto.duracionMinutos;
+                concurso.contrasena = string.IsNullOrWhiteSpace(dto.contrasena) ? null : dto.contrasena;
+                concurso.urlSetProblemas = dto.urlSetProblemas;
+                concurso.minutosCongelamiento = dto.minutosCongelamiento;
+
+                // 2. Actualizar cada problema existente (por inciso, nunca se crea uno nuevo)
+                foreach (var probDto in dto.listaProblemas)
+                {
+                    char incisoNormalizado = char.ToUpperInvariant(probDto.inciso);
+                    var problemaExistente = problemasExistentes.First(p => char.ToUpperInvariant(p.inciso) == incisoNormalizado);
+
+                    problemaExistente.titulo = probDto.titulo;
+                    problemaExistente.tiempo = probDto.tiempo;
+                    problemaExistente.memoria = probDto.memoria;
+
+                    // 3. Actualizar los casos de prueba de este problema, EN ORDEN,
+                    // sin crear ni eliminar filas — solo se sobreescribe entrada/salida
+                    var casosExistentesOrdenados = await _context.CasosPrueba
+                        .Where(c => c.idProblema == problemaExistente.idProblema && c.estado == "Activo")
+                        .OrderBy(c => c.idCasoPrueba) // orden de creación original
+                        .ToListAsync();
+
+                    string clave = incisoNormalizado.ToString();
+                    var casosNuevosOrdenados = casosPorInciso[clave]; // ya viene en el orden de mapaCarpetas (orden del ZIP)
+
+                    // Ya validamos arriba que las cantidades coinciden exactamente
+                    for (int i = 0; i < casosExistentesOrdenados.Count; i++)
+                    {
+                        casosExistentesOrdenados[i].entrada = casosNuevosOrdenados[i].In;
+                        casosExistentesOrdenados[i].salida = casosNuevosOrdenados[i].Out;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    codigo = concurso.codigo,
+                    mensaje = "Concurso, problemas y casos de prueba actualizados exitosamente."
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { mensaje = "Error al actualizar el concurso.", detalle = ex.Message });
+            }
+        }
+
+        private (bool, string) ValidarDatosActualizacion(ActualizarConcursoDto dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.nombre))
+                return (false, "El nombre del concurso es obligatorio.");
+
+            if (string.IsNullOrWhiteSpace(dto.descripcion))
+                return (false, "La descripción del concurso es obligatoria.");
+
+            if (dto.duracionMinutos <= 0)
+                return (false, "La duración del concurso debe ser mayor a 0 minutos.");
+
+            if (dto.duracionMinutos > DURACION_MAXIMA_MINUTOS)
+                return (false, $"La duración del concurso no puede superar los {DURACION_MAXIMA_MINUTOS / 60 / 24} días.");
+
+            if (dto.minutosCongelamiento < 0)
+                return (false, "Los minutos de congelamiento no pueden ser negativos.");
+
+            if (dto.minutosCongelamiento >= dto.duracionMinutos)
+                return (false, "Los minutos de congelamiento no pueden ser mayores o iguales a la duración del concurso.");
+
+            if (dto.fechaInicio == default)
+                return (false, "La fecha de inicio es obligatoria.");
+
+            if (dto.fechaInicio <= DateTime.UtcNow)
+                return (false, "La fecha de inicio debe ser posterior a la fecha actual.");
+
+            if (dto.fechaInicio > DateTime.UtcNow.AddMonths(MESES_MAXIMOS_A_FUTURO))
+                return (false, $"La fecha de inicio no puede programarse con más de {MESES_MAXIMOS_A_FUTURO} meses de anticipación.");
+
+            if (dto.archivoZip == null || dto.archivoZip.Length == 0)
+                return (false, "Debe adjuntar un archivo ZIP con los casos de prueba actualizados.");
+
+            if (!dto.archivoZip.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                return (false, "El archivo adjunto debe tener extensión .zip.");
+
+            const long limiteMB = 100;
+            const long limiteBytes = limiteMB * 1024 * 1024;
+            if (dto.archivoZip.Length > limiteBytes)
+                return (false, $"El archivo ZIP no debe superar los {limiteMB} MB.");
+
+            if (dto.listaProblemas == null || !dto.listaProblemas.Any())
+                return (false, "Debe incluir la lista completa de problemas del concurso.");
+
+            foreach (var p in dto.listaProblemas)
+            {
+                if (!char.IsLetter(p.inciso))
+                    return (false, $"El inciso '{p.inciso}' no es una letra válida.");
+                if (string.IsNullOrWhiteSpace(p.titulo))
+                    return (false, $"El problema con inciso '{p.inciso}' debe tener un título.");
+                if (p.tiempo <= 0)
+                    return (false, $"El tiempo límite del problema '{p.inciso}' debe ser mayor a 0.");
+                if (p.memoria <= 0)
+                    return (false, $"La memoria límite del problema '{p.inciso}' debe ser mayor a 0.");
+            }
+
+            var incisos = dto.listaProblemas.Select(p => char.ToUpperInvariant(p.inciso)).ToList();
+            if (incisos.Count != incisos.Distinct().Count())
+                return (false, "Hay incisos duplicados en la lista de problemas.");
+
+            return (true, string.Empty);
+        }
+        [Authorize(Roles = "AdministradorConcursos")]
+        [HttpGet("editar/{codigo}")]
+        public async Task<IActionResult> ObtenerParaEditar(string codigo)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+
+            codigo = codigo?.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(codigo))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            var concurso = await _context.Concursos
+                .Where(c => c.codigo == codigo && c.estado == "Activo")
+                .Select(c => new
+                {
+                    c.idConcurso,
+                    c.codigo,
+                    c.nombre,
+                    c.descripcion,
+                    c.fechaInicio,
+                    c.duracionMinutos,
+                    c.contrasena,
+                    c.urlSetProblemas,
+                    c.minutosCongelamiento,
+                    c.idUsuarioCreador,
+                    problemas = c.Problemas
+                        .Where(p => p.estado == "Activo")
+                        .OrderBy(p => p.inciso)
+                        .Select(p => new ProblemaParaEditarDto
+                        {
+                            inciso = p.inciso,
+                            titulo = p.titulo,
+                            tiempo = p.tiempo,
+                            memoria = p.memoria,
+                            cantidadCasosPrueba = p.CasosPrueba.Count(cp => cp.estado == "Activo")
+                        })
+                        .ToList()
+                })
+                .FirstOrDefaultAsync();
+
+            if (concurso == null)
+                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+
+            if (concurso.idUsuarioCreador != idUsuarioLogueado)
+                return BadRequest(new { mensaje = "Solo el creador del concurso puede editarlo." });
+
+            var ahora = DateTime.UtcNow;
+            var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
+                : ahora < fechaFin ? "Activo" : "Finalizado";
+
+            if (estadoTiempo != "Proximo")
+                return BadRequest(new { mensaje = "Solo se pueden editar concursos que todavía no han iniciado." });
+
+            var dto = new ConcursoParaEditarDto
+            {
+                codigo = concurso.codigo,
+                nombre = concurso.nombre,
+                descripcion = concurso.descripcion,
+                fechaInicio = concurso.fechaInicio,
+                duracionMinutos = concurso.duracionMinutos,
+                esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena),
+                urlSetProblemas = concurso.urlSetProblemas,
+                minutosCongelamiento = concurso.minutosCongelamiento,
+                listaProblemas = concurso.problemas
+            };
+
+            return Ok(dto);
+        }
+        // Tipos internos auxiliares, solo para este cálculo — no son DTOs de respuesta
+        private record EnvioRankingInterno(int idUsuario, string nombreUsuario, int idProblema, string resultado, DateTime fechaEnvio);
+        private record ProblemaRankingInterno(int idProblema, char inciso);
+        [Authorize(Roles = "Usuario")]
+        [HttpGet("{codigoConcurso}/ranking")]
+        public async Task<IActionResult> Ranking(string codigoConcurso)
+        {
+            var userIdClaim = User.FindFirst("idUsuario")?.Value;
+            if (userIdClaim == null)
+                return Unauthorized(new { mensaje = "Token inválido" });
+            int idUsuarioLogueado = int.Parse(userIdClaim);
+
+            codigoConcurso = codigoConcurso?.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(codigoConcurso))
+                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            var concurso = await _context.Concursos
+                .FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
+
+            if (concurso == null)
+                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+
+            var ahora = DateTime.UtcNow;
+            var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
+            var fechaInicioCongelamiento = fechaFin.AddMinutes(-concurso.minutosCongelamiento);
+
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
+                : ahora < fechaFin ? "Activo" : "Finalizado";
+
+            if (estadoTiempo == "Proximo")
+                return BadRequest(new { mensaje = "El concurso todavía no ha iniciado." });
+
+            bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
+            bool esCreador = concurso.idUsuarioCreador == idUsuarioLogueado;
+
+            bool yaInscrito = await _context.ParticipantesConcursos
+                .AnyAsync(p => p.idUsuario == idUsuarioLogueado
+                            && p.idConcurso == concurso.idConcurso
+                            && p.estado == "Activo");
+
+            if (esPrivado && !yaInscrito && !esCreador)
+                return BadRequest(new { mensaje = "No tienes acceso al ranking de este concurso." });
+
+            bool estaEnCurso = estadoTiempo == "Activo";
+            DateTime? corte = estaEnCurso ? fechaInicioCongelamiento : null;
+
+            bool congeladoAhoraMismo = estaEnCurso
+                && concurso.minutosCongelamiento > 0
+                && ahora >= fechaInicioCongelamiento;
+
+            // Tipo concreto en vez de anónimo -> List<ProblemaRankingInterno>, sin problema de covarianza
+            var problemas = await _context.Problemas
+                .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
+                .OrderBy(p => p.inciso)
+                .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso))
+                .ToListAsync();
+
+            if (!problemas.Any())
+                return Ok(new RankingConcursoDto { codigo = concurso.codigo, nombre = concurso.nombre, congelado = congeladoAhoraMismo, participantes = new() });
+
+            var idsProblemas = problemas.Select(p => p.idProblema).ToList();
+
+            var enviosQuery = _context.Envios
+                .Where(e => idsProblemas.Contains(e.idProblema) && e.upsolving == "No");
+
+            if (corte.HasValue)
+                enviosQuery = enviosQuery.Where(e => e.fechaEnvio <= corte.Value);
+
+            // Tipo concreto en vez de anónimo -> List<EnvioRankingInterno>
+            var envios = await enviosQuery
+                .OrderBy(e => e.fechaEnvio)
+                .Select(e => new EnvioRankingInterno(
+                    e.idUsuario, e.Usuario.nombre, e.idProblema, e.resultado, e.fechaEnvio))
+                .ToListAsync();
+
+            var participantes = CalcularRanking(envios, problemas, concurso.fechaInicio);
+
+            return Ok(new RankingConcursoDto
+            {
+                codigo = concurso.codigo,
+                nombre = concurso.nombre,
+                congelado = congeladoAhoraMismo,
+                participantes = participantes
+            });
+        }
+
+        // ============================================================
+        // Lógica ICPC — separada en métodos privados puros (sin BD)
+        // ============================================================
+        private List<RankingParticipanteDto> CalcularRanking(
+            List<EnvioRankingInterno> envios,
+            List<ProblemaRankingInterno> problemas,
+            DateTime fechaInicioConcurso)
+        {
+            var porUsuario = envios
+                .GroupBy(e => new { e.idUsuario, e.nombreUsuario })
+                .Select(grupoUsuario =>
+                {
+                    var detalle = new List<RankingProblemaDetalleDto>();
+                    int problemasResueltos = 0;
+                    int tiempoTotal = 0;
+                    int cantidadIntentosTotal = 0;
+
+                    foreach (var problema in problemas)
+                    {
+                        var enviosDelProblema = grupoUsuario
+                            .Where(e => e.idProblema == problema.idProblema)
+                            .OrderBy(e => e.fechaEnvio)
+                            .ToList();
+
+                        var resultadoProblema = CalcularDetalleProblema(enviosDelProblema, fechaInicioConcurso);
+
+                        detalle.Add(new RankingProblemaDetalleDto
+                        {
+                            inciso = problema.inciso,
+                            estado = resultadoProblema.Estado,
+                            intentos = resultadoProblema.Intentos,
+                            tiempoMinutos = resultadoProblema.TiempoMinutos
+                        });
+
+                        if (resultadoProblema.Estado == "Aceptado")
+                        {
+                            problemasResueltos++;
+                            tiempoTotal += resultadoProblema.TiempoMinutos ?? 0;
+                        }
+
+                        cantidadIntentosTotal += resultadoProblema.Intentos;
+                    }
+
+                    return new RankingParticipanteDto
+                    {
+                        idUsuario = grupoUsuario.Key.idUsuario,
+                        nombreUsuario = grupoUsuario.Key.nombreUsuario,
+                        problemasResueltos = problemasResueltos,
+                        tiempoTotal = tiempoTotal,
+                        cantidadIntentos = cantidadIntentosTotal,
+                        detalle = detalle
+                    };
+                })
+                .OrderByDescending(p => p.problemasResueltos)
+                .ThenBy(p => p.tiempoTotal)
+                .ThenBy(p => p.idUsuario)
+                .ToList();
+
+            AsignarPuestosCompartidos(porUsuario);
+
+            return porUsuario;
+        }
+
+        private (string Estado, int Intentos, int? TiempoMinutos) CalcularDetalleProblema(
+            List<EnvioRankingInterno> enviosOrdenados, DateTime fechaInicioConcurso)
+        {
+            if (!enviosOrdenados.Any())
+                return ("No intentado", 0, null);
+
+            int intentosFallidosAntesDeAC = 0;
+
+            foreach (var envio in enviosOrdenados)
+            {
+                if (envio.resultado == VeredictosEnvio.Aceptado)
+                {
+                    int minutosHastaAC = (int)(envio.fechaEnvio - fechaInicioConcurso).TotalMinutes;
+                    int penalizacion = intentosFallidosAntesDeAC * 20;
+                    int tiempoFinal = minutosHastaAC + penalizacion;
+
+                    return ("Aceptado", intentosFallidosAntesDeAC + 1, tiempoFinal);
+                }
+
+                intentosFallidosAntesDeAC++;
+            }
+
+            return ("No resuelto", intentosFallidosAntesDeAC, null);
+        }
+
+        private void AsignarPuestosCompartidos(List<RankingParticipanteDto> ordenados)
+        {
+            for (int i = 0; i < ordenados.Count; i++)
+            {
+                if (i == 0)
+                {
+                    ordenados[i].puesto = 1;
+                    continue;
+                }
+
+                var anterior = ordenados[i - 1];
+                var actual = ordenados[i];
+
+                bool mismoResultado = actual.problemasResueltos == anterior.problemasResueltos
+                                    && actual.tiempoTotal == anterior.tiempoTotal;
+
+                ordenados[i].puesto = mismoResultado ? anterior.puesto : i + 1;
+            }
+        }
     }
+
 
 }

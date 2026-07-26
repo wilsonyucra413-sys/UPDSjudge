@@ -128,4 +128,70 @@ namespace UPDSjudgeB.DTOs
         public int tamanoPagina { get; set; }
         public List<ConcursoAdminItemDto> concursos { get; set; }
     }
+    public class ActualizarProblemaDto
+    {
+        public char inciso { get; set; }
+        public string titulo { get; set; }
+        public float tiempo { get; set; }
+        public int memoria { get; set; }
+    }
+    public class ActualizarConcursoDto
+    {
+        public string nombre { get; set; }
+        public string descripcion { get; set; }
+        public DateTime fechaInicio { get; set; }
+        public int duracionMinutos { get; set; }
+        public string? contrasena { get; set; }
+        public string urlSetProblemas { get; set; }
+        public int minutosCongelamiento { get; set; }
+        public List<ActualizarProblemaDto> listaProblemas { get; set; }
+        public IFormFile archivoZip { get; set; }
+    }
+    public class ProblemaParaEditarDto
+    {
+        public char inciso { get; set; }
+        public string titulo { get; set; }
+        public float tiempo { get; set; }
+        public int memoria { get; set; }
+        public int cantidadCasosPrueba { get; set; }
+    }
+
+    public class ConcursoParaEditarDto
+    {
+        public string codigo { get; set; }
+        public string nombre { get; set; }
+        public string descripcion { get; set; }
+        public DateTime fechaInicio { get; set; }
+        public int duracionMinutos { get; set; }
+        public bool esPrivado { get; set; }
+        public string urlSetProblemas { get; set; }
+        public int minutosCongelamiento { get; set; }
+        public List<ProblemaParaEditarDto> listaProblemas { get; set; }
+    }
+    public class RankingProblemaDetalleDto
+    {
+        public char inciso { get; set; }
+        public string estado { get; set; }   // "No intentado" | "Aceptado" | "No resuelto"
+        public int intentos { get; set; }
+        public int? tiempoMinutos { get; set; } // solo si "Aceptado" (incluye penalización)
+    }
+
+    public class RankingParticipanteDto
+    {
+        public int puesto { get; set; }
+        public int idUsuario { get; set; }
+        public string nombreUsuario { get; set; }
+        public int problemasResueltos { get; set; }
+        public int tiempoTotal { get; set; }
+        public int cantidadIntentos { get; set; }
+        public List<RankingProblemaDetalleDto> detalle { get; set; } = new();
+    }
+
+    public class RankingConcursoDto
+    {
+        public string codigo { get; set; }
+        public string nombre { get; set; }
+        public bool congelado { get; set; }
+        public List<RankingParticipanteDto> participantes { get; set; } = new();
+    }
 }

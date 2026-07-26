@@ -18,6 +18,9 @@ namespace UPDSjudgeB.Controllers
     {
         private readonly ApplicationDbContext _context;
 
+        // no pueden modificar al superusuario (el que tiene los 3 roles)
+        private const int ID_USUARIO_PROTEGIDO = 1;
+
         public RolesController(ApplicationDbContext context)
         {
             _context = context;
@@ -33,8 +36,7 @@ namespace UPDSjudgeB.Controllers
             return Ok(roles);
         }
 
-        // GET api/roles/usuarios?query=...
-        // Búsqueda de usuarios por correo o nombre, con sus roles actuales
+        [HttpGet("usuarios")]
         [HttpGet("usuarios")]
         public async Task<IActionResult> BuscarUsuarios(
             [FromQuery] string? query, [FromQuery] int pagina = 1, [FromQuery] int tamanoPagina = 10)
@@ -42,7 +44,9 @@ namespace UPDSjudgeB.Controllers
             if (pagina < 1) pagina = 1;
             if (tamanoPagina < 1 || tamanoPagina > 50) tamanoPagina = 10;
 
-            var busqueda = _context.Usuarios.AsQueryable();
+            var busqueda = _context.Usuarios
+                .Where(u => u.idUsuario != ID_USUARIO_PROTEGIDO) // nunca se muestra ni se puede tocar
+                .AsQueryable();
 
             if (!string.IsNullOrWhiteSpace(query))
             {
@@ -69,7 +73,6 @@ namespace UPDSjudgeB.Controllers
             return Ok(new { total, pagina, tamanoPagina, usuarios });
         }
 
-        // POST api/roles/agregar
         [HttpPost("agregar")]
         public async Task<IActionResult> Agregar([FromBody] CambiarRolDto dto)
         {
@@ -77,15 +80,18 @@ namespace UPDSjudgeB.Controllers
             if (!esValido)
                 return BadRequest(new { mensaje = mensajeError });
 
+            if (usuario!.idUsuario == ID_USUARIO_PROTEGIDO)
+                return BadRequest(new { mensaje = "No se pueden modificar los roles del usuario administrador por defecto." });
+
             bool yaLoTiene = await _context.UsuarioRoles
-                .AnyAsync(ur => ur.idUsuario == usuario!.idUsuario && ur.idRol == rol!.idRol);
+                .AnyAsync(ur => ur.idUsuario == usuario.idUsuario && ur.idRol == rol!.idRol);
 
             if (yaLoTiene)
                 return BadRequest(new { mensaje = $"El usuario ya tiene el rol '{rol!.nombre}'." });
 
             _context.UsuarioRoles.Add(new UsuarioRol
             {
-                idUsuario = usuario!.idUsuario,
+                idUsuario = usuario.idUsuario,
                 idRol = rol!.idRol
             });
 
@@ -96,12 +102,10 @@ namespace UPDSjudgeB.Controllers
             }
             catch (DbUpdateException)
             {
-                // Cubre dos requests casi simultáneos asignando el mismo rol
                 return BadRequest(new { mensaje = $"El usuario ya tiene el rol '{rol.nombre}'." });
             }
         }
 
-        // POST api/roles/quitar
         [HttpPost("quitar")]
         public async Task<IActionResult> Quitar([FromBody] CambiarRolDto dto)
         {
@@ -109,8 +113,11 @@ namespace UPDSjudgeB.Controllers
             if (!esValido)
                 return BadRequest(new { mensaje = mensajeError });
 
+            if (usuario!.idUsuario == ID_USUARIO_PROTEGIDO)
+                return BadRequest(new { mensaje = "No se pueden modificar los roles del usuario administrador por defecto." });
+
             var relacion = await _context.UsuarioRoles
-                .FirstOrDefaultAsync(ur => ur.idUsuario == usuario!.idUsuario && ur.idRol == rol!.idRol);
+                .FirstOrDefaultAsync(ur => ur.idUsuario == usuario.idUsuario && ur.idRol == rol!.idRol);
 
             if (relacion == null)
                 return BadRequest(new { mensaje = $"El usuario no tiene el rol '{rol!.nombre}', no se puede quitar." });
