@@ -45,10 +45,13 @@ namespace UPDSjudgeB.Controllers
                 return BadRequest(new { mensaje = "No puedes inscribirte a un concurso que tú mismo creaste." });
 
             var ahora = DateTime.UtcNow;
+            var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
 
-            // Las inscripciones cierran apenas inicia el concurso, no cuando termina.
-            if (ahora >= concurso.fechaInicio)
-                return BadRequest(new { mensaje = "Las inscripciones para este concurso ya están cerradas." });
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
+                : ahora < fechaFin ? "Activo" : "Finalizado";
+
+            if (estadoTiempo == "Activo")
+                return BadRequest(new { mensaje = "Las inscripciones están cerradas mientras el concurso está en curso." });
 
             bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
             if (esPrivado)
