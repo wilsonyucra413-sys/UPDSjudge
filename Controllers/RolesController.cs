@@ -37,7 +37,6 @@ namespace UPDSjudgeB.Controllers
         }
 
         [HttpGet("usuarios")]
-        [HttpGet("usuarios")]
         public async Task<IActionResult> BuscarUsuarios(
             [FromQuery] string? query, [FromQuery] int pagina = 1, [FromQuery] int tamanoPagina = 10)
         {
