@@ -196,11 +196,33 @@ namespace UPDSjudgeB.DTOs
         public List<RankingProblemaDetalleDto> detalle { get; set; } = new();
     }
 
+    public class RankingProblemaDto
+    {
+        public char inciso { get; set; }
+        public string colorGlobo { get; set; }
+    }
+
+    public class RankingProblemaMasResueltoDto
+    {
+        public char inciso { get; set; }
+        public string colorGlobo { get; set; }
+        public int cantidadAceptaciones { get; set; }
+    }
+
     public class RankingConcursoDto
     {
         public string codigo { get; set; }
         public string nombre { get; set; }
         public bool congelado { get; set; }
+        public string estadoTiempo { get; set; }
+        public DateTime fechaInicio { get; set; }
+        public DateTime fechaFin { get; set; }
+        public int duracionMinutos { get; set; }
+        public int minutosCongelamiento { get; set; }
+        public int totalInscritos { get; set; }
+        public int totalEnvios { get; set; }
+        public RankingProblemaMasResueltoDto? problemaMasResuelto { get; set; }
+        public List<RankingProblemaDto> problemas { get; set; } = new();
         public List<RankingParticipanteDto> participantes { get; set; } = new();
     }
 }
