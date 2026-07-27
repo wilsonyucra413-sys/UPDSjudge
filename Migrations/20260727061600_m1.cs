@@ -152,6 +152,7 @@ namespace UPDSjudgeB.Migrations
                     titulo = table.Column<string>(type: "text", nullable: false),
                     tiempo = table.Column<float>(type: "real", nullable: false),
                     memoria = table.Column<int>(type: "integer", nullable: false),
+                    colorGlobo = table.Column<string>(type: "text", nullable: false),
                     estado = table.Column<string>(type: "text", nullable: false),
                     idConcurso = table.Column<int>(type: "integer", nullable: false)
                 },

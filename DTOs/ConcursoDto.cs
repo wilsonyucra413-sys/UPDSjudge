@@ -134,6 +134,7 @@ namespace UPDSjudgeB.DTOs
         public string titulo { get; set; }
         public float tiempo { get; set; }
         public int memoria { get; set; }
+        public string colorGlobo { get; set; }
     }
     public class ActualizarConcursoDto
     {
@@ -153,6 +154,7 @@ namespace UPDSjudgeB.DTOs
         public string titulo { get; set; }
         public float tiempo { get; set; }
         public int memoria { get; set; }
+        public string colorGlobo { get; set; }
         public int cantidadCasosPrueba { get; set; }
     }
 
@@ -171,6 +173,7 @@ namespace UPDSjudgeB.DTOs
     public class RankingProblemaDetalleDto
     {
         public char inciso { get; set; }
+        public string colorGlobo { get; set; }
         public string estado { get; set; }   // "No intentado" | "Aceptado" | "No resuelto"
         public int intentos { get; set; }
         public int? tiempoMinutos { get; set; } // solo si "Aceptado" (incluye penalización)

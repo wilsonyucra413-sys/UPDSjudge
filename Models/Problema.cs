@@ -16,6 +16,7 @@ namespace UPDSjudgeB.Models
         public string titulo { get; set; }
         public float tiempo { get; set; }
         public int memoria { get; set; }
+        public string colorGlobo{get;set;}
         public string estado { get; set; }
 
         public int idConcurso { get; set; }
