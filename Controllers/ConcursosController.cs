@@ -1260,95 +1260,64 @@ namespace UPDSjudgeB.Controllers
         // Tipos internos auxiliares, solo para este cálculo — no son DTOs de respuesta
         private record EnvioRankingInterno(int idUsuario, string nombreUsuario, int idProblema, string resultado, DateTime fechaEnvio);
         private record ProblemaRankingInterno(int idProblema, char inciso, string colorGlobo);
+        private record ParticipanteRankingInterno(int idUsuario, string nombreUsuario);
+
         [Authorize(Roles = "Usuario")]
         [HttpGet("{codigoConcurso}/ranking")]
         public async Task<IActionResult> Ranking(string codigoConcurso)
         {
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
-            if (userIdClaim == null)
-                return Unauthorized(new { mensaje = "Token inválido" });
+            if (userIdClaim == null) return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
-
             codigoConcurso = codigoConcurso?.Trim().ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(codigoConcurso))
-                return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
-
-            var concurso = await _context.Concursos
-                .FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
-
-            if (concurso == null)
-                return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
+            if (string.IsNullOrWhiteSpace(codigoConcurso)) return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+            var concurso = await _context.Concursos.FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
+            if (concurso == null) return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
 
             var ahora = DateTime.UtcNow;
             var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
             var fechaInicioCongelamiento = fechaFin.AddMinutes(-concurso.minutosCongelamiento);
-
-            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo"
-                : ahora < fechaFin ? "Activo" : "Finalizado";
-
-            if (estadoTiempo == "Proximo")
-                return BadRequest(new { mensaje = "El concurso todavía no ha iniciado." });
-
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo" : ahora < fechaFin ? "Activo" : "Finalizado";
+            if (estadoTiempo == "Proximo") return BadRequest(new { mensaje = "El concurso todavía no ha iniciado." });
             bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
             bool esCreador = concurso.idUsuarioCreador == idUsuarioLogueado;
+            bool yaInscrito = await _context.ParticipantesConcursos.AnyAsync(p => p.idUsuario == idUsuarioLogueado && p.idConcurso == concurso.idConcurso && p.estado == "Activo");
+            if (esPrivado && !yaInscrito && !esCreador) return BadRequest(new { mensaje = "No tienes acceso al ranking de este concurso." });
 
-            bool yaInscrito = await _context.ParticipantesConcursos
-                .AnyAsync(p => p.idUsuario == idUsuarioLogueado
-                            && p.idConcurso == concurso.idConcurso
-                            && p.estado == "Activo");
-
-            if (esPrivado && !yaInscrito && !esCreador)
-                return BadRequest(new { mensaje = "No tienes acceso al ranking de este concurso." });
-
-            bool estaEnCurso = estadoTiempo == "Activo";
-            DateTime? corte = estaEnCurso ? fechaInicioCongelamiento : null;
-
-            bool congeladoAhoraMismo = estaEnCurso
-                && concurso.minutosCongelamiento > 0
-                && ahora >= fechaInicioCongelamiento;
-
-            // Tipo concreto en vez de anónimo -> List<ProblemaRankingInterno>, sin problema de covarianza
-            var problemas = await _context.Problemas
-                .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
-                .OrderBy(p => p.inciso)
-                .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso, p.colorGlobo))
-                .ToListAsync();
-
-            if (!problemas.Any())
-                return Ok(new RankingConcursoDto { codigo = concurso.codigo, nombre = concurso.nombre, congelado = congeladoAhoraMismo, participantes = new() });
+            DateTime? corte = estadoTiempo == "Activo" && concurso.minutosCongelamiento > 0 ? fechaInicioCongelamiento : null;
+            bool congeladoAhoraMismo = corte.HasValue && ahora >= corte.Value;
+            var problemas = await _context.Problemas.Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo").OrderBy(p => p.inciso)
+                .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso, p.colorGlobo)).ToListAsync();
+            var participantesInscritos = await _context.ParticipantesConcursos.Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo").OrderBy(p => p.idUsuario)
+                .Select(p => new ParticipanteRankingInterno(p.idUsuario, p.Usuario.nombre)).ToListAsync();
+            var response = new RankingConcursoDto {
+                codigo = concurso.codigo, nombre = concurso.nombre, congelado = congeladoAhoraMismo, estadoTiempo = estadoTiempo,
+                fechaInicio = concurso.fechaInicio, fechaFin = fechaFin, duracionMinutos = concurso.duracionMinutos,
+                minutosCongelamiento = concurso.minutosCongelamiento, totalInscritos = participantesInscritos.Count,
+                problemas = problemas.Select(p => new RankingProblemaDto { inciso = p.inciso, colorGlobo = p.colorGlobo }).ToList()
+            };
+            if (!problemas.Any()) return Ok(response);
 
             var idsProblemas = problemas.Select(p => p.idProblema).ToList();
-
-            var enviosQuery = _context.Envios
-                .Where(e => idsProblemas.Contains(e.idProblema) && e.upsolving == "No");
-
-            if (corte.HasValue)
-                enviosQuery = enviosQuery.Where(e => e.fechaEnvio <= corte.Value);
-
-            // Tipo concreto en vez de anónimo -> List<EnvioRankingInterno>
-            var envios = await enviosQuery
-                .OrderBy(e => e.fechaEnvio)
-                .Select(e => new EnvioRankingInterno(
-                    e.idUsuario, e.Usuario.nombre, e.idProblema, e.resultado, e.fechaEnvio))
-                .ToListAsync();
-
-            var participantes = CalcularRanking(envios, problemas, concurso.fechaInicio);
-
-            return Ok(new RankingConcursoDto
-            {
-                codigo = concurso.codigo,
-                nombre = concurso.nombre,
-                congelado = congeladoAhoraMismo,
-                participantes = participantes
-            });
+            var idsParticipantes = participantesInscritos.Select(p => p.idUsuario).ToList();
+            var enviosQuery = _context.Envios.Where(e => idsProblemas.Contains(e.idProblema) && idsParticipantes.Contains(e.idUsuario) && e.upsolving == "No");
+            if (corte.HasValue) enviosQuery = enviosQuery.Where(e => e.fechaEnvio <= corte.Value);
+            var envios = await enviosQuery.OrderBy(e => e.fechaEnvio)
+                .Select(e => new EnvioRankingInterno(e.idUsuario, e.Usuario.nombre, e.idProblema, e.resultado, e.fechaEnvio)).ToListAsync();
+            response.totalEnvios = envios.Count;
+            response.participantes = CalcularRanking(envios, problemas, participantesInscritos, concurso.fechaInicio);
+            response.problemaMasResuelto = problemas.Select(p => new { Problema = p, Cantidad = response.participantes.Count(r => r.detalle.Any(d => d.inciso == p.inciso && d.estado == "Aceptado")) })
+                .Where(x => x.Cantidad > 0).OrderByDescending(x => x.Cantidad).ThenBy(x => x.Problema.inciso)
+                .Select(x => new RankingProblemaMasResueltoDto { inciso = x.Problema.inciso, colorGlobo = x.Problema.colorGlobo, cantidadAceptaciones = x.Cantidad }).FirstOrDefault();
+            return Ok(response);
         }
 
-        // ============================================================
         // Lógica ICPC — separada en métodos privados puros (sin BD)
         // ============================================================
         private List<RankingParticipanteDto> CalcularRanking(
             List<EnvioRankingInterno> envios,
             List<ProblemaRankingInterno> problemas,
+            List<ParticipanteRankingInterno> participantesInscritos,
             DateTime fechaInicioConcurso)
         {
             // Agrupamos UNA sola vez por (usuario, problema) — O(E), no O(U×P×E)
@@ -1356,10 +1325,7 @@ namespace UPDSjudgeB.Controllers
                 .GroupBy(e => (e.idUsuario, e.idProblema))
                 .ToDictionary(g => g.Key, g => g.OrderBy(e => e.fechaEnvio).ToList());
 
-            var usuariosUnicos = envios
-                .Select(e => new { e.idUsuario, e.nombreUsuario })
-                .Distinct()
-                .ToList();
+            var usuariosUnicos = participantesInscritos;
 
             var porUsuario = usuariosUnicos
                 .Select(usuario =>
