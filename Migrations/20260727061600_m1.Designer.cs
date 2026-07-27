@@ -12,7 +12,7 @@ using UPDSjudgeB.data;
 namespace UPDSjudgeB.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260717005059_m1")]
+    [Migration("20260727061600_m1")]
     partial class m1
     {
         /// <inheritdoc />
@@ -250,6 +250,10 @@ namespace UPDSjudgeB.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("idProblema"));
+
+                    b.Property<string>("colorGlobo")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<string>("estado")
                         .IsRequired()

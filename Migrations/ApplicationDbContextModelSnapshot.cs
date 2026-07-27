@@ -248,6 +248,10 @@ namespace UPDSjudgeB.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("idProblema"));
 
+                    b.Property<string>("colorGlobo")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("estado")
                         .IsRequired()
                         .HasColumnType("text");

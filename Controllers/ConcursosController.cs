@@ -23,7 +23,22 @@ namespace UPDSjudgeB.Controllers
         {
             _context = context;
         }
-
+        private static readonly List<string> ColoresGlobos = new()
+            {
+                "#E6194B", // Rojo fuerte
+                "#3CB44B", // Verde
+                "#4363D8", // Azul
+                "#FFE119", // Amarillo
+                "#F58231", // Naranja
+                "#911EB4", // Morado
+                "#F032E6", // Magenta
+                "#42D4F4", // Celeste
+                "#FABED4", // Rosa
+                "#469990", // Verde azulado
+                "#DCBEFF", // Lavanda
+                "#9A6324", // Marrón
+                "#000000"  // Negro
+            };
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpPost("crear")]
         [RequestSizeLimit(100 * 1024 * 1024)] // 100 MB
@@ -80,7 +95,8 @@ namespace UPDSjudgeB.Controllers
                 };
                 _context.Concursos.Add(nuevoConcurso);
                 await _context.SaveChangesAsync();
-
+                var coloresAsignados = ObtenerColoresAleatorios(dto.listaProblemas.Count);
+                int indiceColor = 0;
                 foreach (var probDto in dto.listaProblemas)
                 {
                     var nuevoProblema = new Problema
@@ -90,6 +106,7 @@ namespace UPDSjudgeB.Controllers
                         titulo = probDto.titulo,
                         tiempo = probDto.tiempo,
                         memoria = probDto.memoria,
+                        colorGlobo = coloresAsignados[indiceColor++],
                         estado = "Activo"
                     };
                     _context.Problemas.Add(nuevoProblema);
@@ -122,6 +139,15 @@ namespace UPDSjudgeB.Controllers
                 await transaction.RollbackAsync();
                 return BadRequest(new { mensaje = "Error al procesar el concurso.", detalle = ex.Message });
             }
+        }
+        private List<string> ObtenerColoresAleatorios(int cantidad)
+        {
+            var random = new Random();
+
+            return ColoresGlobos
+                .OrderBy(x => random.Next())
+                .Take(cantidad)
+                .ToList();
         }
 
         [Authorize(Roles = "Usuario")]
@@ -442,7 +468,7 @@ namespace UPDSjudgeB.Controllers
         }
 
         // Constantes de la clase
-        private const int MAXIMO_PROBLEMAS_POR_CONCURSO = 12;
+        private const int MAXIMO_PROBLEMAS_POR_CONCURSO = 13;
         private const long TAMANO_MAXIMO_POR_ARCHIVO_BYTES = 5 * 1024 * 1024;
         private const long TAMANO_MAXIMO_DESCOMPRIMIDO_TOTAL_BYTES = 600 * 1024 * 1024;
         private const int DURACION_MAXIMA_MINUTOS = 7 * 24 * 60; // 7 días
@@ -958,7 +984,6 @@ namespace UPDSjudgeB.Controllers
             if (!dtoValido)
                 return BadRequest(new { mensaje = mensajeDto });
 
-            // Los problemas existentes (activos) del concurso, en la BD
             var problemasExistentes = await _context.Problemas
                 .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
                 .ToListAsync();
@@ -968,7 +993,6 @@ namespace UPDSjudgeB.Controllers
                 .ToHashSet();
             var incisosEnviados = dto.listaProblemas.Select(p => char.ToUpperInvariant(p.inciso)).ToHashSet();
 
-            // No se permite agregar ni quitar problemas — debe ser exactamente el mismo conjunto
             var sobrantes = incisosEnviados.Except(incisosExistentes).ToList();
             if (sobrantes.Any())
                 return BadRequest(new { mensaje = $"No se pueden agregar problemas nuevos: {string.Join(", ", sobrantes)}" });
@@ -977,9 +1001,14 @@ namespace UPDSjudgeB.Controllers
             if (faltantes.Any())
                 return BadRequest(new { mensaje = $"Faltan problemas existentes en la solicitud: {string.Join(", ", faltantes)}" });
 
-            // Validar estructura del ZIP igual que en Crear, pero como ActualizarProblemaDto
-            // no tiene el mismo tipo que CrearProblemaDto, adaptamos la lista para reutilizar
-            // el método existente sin duplicar su lógica interna.
+            var incisos = dto.listaProblemas.Select(p => char.ToUpperInvariant(p.inciso)).ToList();
+            if (incisos.Count != incisos.Distinct().Count())
+                return BadRequest(new { mensaje = "Hay incisos duplicados en la lista de problemas." });
+
+            var (coloresValidos, mensajeColores) = ValidarColoresGlobo(dto.listaProblemas);
+            if (!coloresValidos)
+                return BadRequest(new { mensaje = mensajeColores });
+
             var listaProblemasComoCrear = dto.listaProblemas
                 .Select(p => new CrearProblemaDto { inciso = p.inciso, titulo = p.titulo, tiempo = p.tiempo, memoria = p.memoria })
                 .ToList();
@@ -989,14 +1018,11 @@ namespace UPDSjudgeB.Controllers
             if (!estructuraValida)
                 return BadRequest(new { mensaje = mensajeEstructura });
 
-            // Validar que la CANTIDAD de casos de prueba por inciso coincida exactamente
-            // con la cantidad ya existente en la BD — no se permite agregar ni quitar casos
             foreach (var problema in problemasExistentes)
             {
                 string clave = problema.inciso.ToString().ToUpperInvariant();
                 int cantidadExistente = await _context.CasosPrueba
                     .CountAsync(c => c.idProblema == problema.idProblema && c.estado == "Activo");
-
                 int cantidadEnviada = mapaCarpetas.ContainsKey(clave) ? mapaCarpetas[clave].Count : 0;
 
                 if (cantidadEnviada != cantidadExistente)
@@ -1018,7 +1044,6 @@ namespace UPDSjudgeB.Controllers
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                // 1. Actualizar datos generales del concurso
                 concurso.nombre = dto.nombre;
                 concurso.descripcion = dto.descripcion;
                 concurso.fechaInicio = dto.fechaInicio;
@@ -1027,7 +1052,6 @@ namespace UPDSjudgeB.Controllers
                 concurso.urlSetProblemas = dto.urlSetProblemas;
                 concurso.minutosCongelamiento = dto.minutosCongelamiento;
 
-                // 2. Actualizar cada problema existente (por inciso, nunca se crea uno nuevo)
                 foreach (var probDto in dto.listaProblemas)
                 {
                     char incisoNormalizado = char.ToUpperInvariant(probDto.inciso);
@@ -1036,18 +1060,16 @@ namespace UPDSjudgeB.Controllers
                     problemaExistente.titulo = probDto.titulo;
                     problemaExistente.tiempo = probDto.tiempo;
                     problemaExistente.memoria = probDto.memoria;
+                    problemaExistente.colorGlobo = probDto.colorGlobo;
 
-                    // 3. Actualizar los casos de prueba de este problema, EN ORDEN,
-                    // sin crear ni eliminar filas — solo se sobreescribe entrada/salida
                     var casosExistentesOrdenados = await _context.CasosPrueba
                         .Where(c => c.idProblema == problemaExistente.idProblema && c.estado == "Activo")
-                        .OrderBy(c => c.idCasoPrueba) // orden de creación original
+                        .OrderBy(c => c.idCasoPrueba)
                         .ToListAsync();
 
                     string clave = incisoNormalizado.ToString();
-                    var casosNuevosOrdenados = casosPorInciso[clave]; // ya viene en el orden de mapaCarpetas (orden del ZIP)
+                    var casosNuevosOrdenados = casosPorInciso[clave];
 
-                    // Ya validamos arriba que las cantidades coinciden exactamente
                     for (int i = 0; i < casosExistentesOrdenados.Count; i++)
                     {
                         casosExistentesOrdenados[i].entrada = casosNuevosOrdenados[i].In;
@@ -1132,6 +1154,30 @@ namespace UPDSjudgeB.Controllers
 
             return (true, string.Empty);
         }
+        private (bool, string) ValidarColoresGlobo(List<ActualizarProblemaDto> listaProblemas)
+        {
+            foreach (var p in listaProblemas)
+            {
+                if (string.IsNullOrWhiteSpace(p.colorGlobo))
+                    return (false, $"El problema '{char.ToUpperInvariant(p.inciso)}' debe tener un color de globo.");
+
+                bool esColorValido = ColoresGlobos.Any(c =>
+                    string.Equals(c, p.colorGlobo, StringComparison.OrdinalIgnoreCase));
+
+                if (!esColorValido)
+                    return (false, $"El color '{p.colorGlobo}' del problema '{char.ToUpperInvariant(p.inciso)}' " +
+                                    $"no es un color válido. Debe ser uno de los predeterminados por el sistema.");
+            }
+
+            var coloresNormalizados = listaProblemas
+                .Select(p => p.colorGlobo.ToUpperInvariant())
+                .ToList();
+
+            if (coloresNormalizados.Count != coloresNormalizados.Distinct().Count())
+                return (false, "No puede haber dos problemas con el mismo color de globo.");
+
+            return (true, string.Empty);
+        }
         [Authorize(Roles = "AdministradorConcursos")]
         [HttpGet("editar/{codigo}")]
         public async Task<IActionResult> ObtenerParaEditar(string codigo)
@@ -1168,6 +1214,7 @@ namespace UPDSjudgeB.Controllers
                             titulo = p.titulo,
                             tiempo = p.tiempo,
                             memoria = p.memoria,
+                            colorGlobo = p.colorGlobo,
                             cantidadCasosPrueba = p.CasosPrueba.Count(cp => cp.estado == "Activo")
                         })
                         .ToList()
@@ -1205,7 +1252,7 @@ namespace UPDSjudgeB.Controllers
         }
         // Tipos internos auxiliares, solo para este cálculo — no son DTOs de respuesta
         private record EnvioRankingInterno(int idUsuario, string nombreUsuario, int idProblema, string resultado, DateTime fechaEnvio);
-        private record ProblemaRankingInterno(int idProblema, char inciso);
+        private record ProblemaRankingInterno(int idProblema, char inciso, string colorGlobo);
         [Authorize(Roles = "Usuario")]
         [HttpGet("{codigoConcurso}/ranking")]
         public async Task<IActionResult> Ranking(string codigoConcurso)
@@ -1257,7 +1304,7 @@ namespace UPDSjudgeB.Controllers
             var problemas = await _context.Problemas
                 .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
                 .OrderBy(p => p.inciso)
-                .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso))
+                .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso, p.colorGlobo))
                 .ToListAsync();
 
             if (!problemas.Any())
@@ -1297,9 +1344,18 @@ namespace UPDSjudgeB.Controllers
             List<ProblemaRankingInterno> problemas,
             DateTime fechaInicioConcurso)
         {
-            var porUsuario = envios
-                .GroupBy(e => new { e.idUsuario, e.nombreUsuario })
-                .Select(grupoUsuario =>
+            // Agrupamos UNA sola vez por (usuario, problema) — O(E), no O(U×P×E)
+            var enviosPorUsuarioYProblema = envios
+                .GroupBy(e => (e.idUsuario, e.idProblema))
+                .ToDictionary(g => g.Key, g => g.OrderBy(e => e.fechaEnvio).ToList());
+
+            var usuariosUnicos = envios
+                .Select(e => new { e.idUsuario, e.nombreUsuario })
+                .Distinct()
+                .ToList();
+
+            var porUsuario = usuariosUnicos
+                .Select(usuario =>
                 {
                     var detalle = new List<RankingProblemaDetalleDto>();
                     int problemasResueltos = 0;
@@ -1308,16 +1364,17 @@ namespace UPDSjudgeB.Controllers
 
                     foreach (var problema in problemas)
                     {
-                        var enviosDelProblema = grupoUsuario
-                            .Where(e => e.idProblema == problema.idProblema)
-                            .OrderBy(e => e.fechaEnvio)
-                            .ToList();
+                        var enviosDelProblema = enviosPorUsuarioYProblema
+                            .TryGetValue((usuario.idUsuario, problema.idProblema), out var lista)
+                            ? lista
+                            : new List<EnvioRankingInterno>();
 
                         var resultadoProblema = CalcularDetalleProblema(enviosDelProblema, fechaInicioConcurso);
 
                         detalle.Add(new RankingProblemaDetalleDto
                         {
                             inciso = problema.inciso,
+                            colorGlobo = problema.colorGlobo,
                             estado = resultadoProblema.Estado,
                             intentos = resultadoProblema.Intentos,
                             tiempoMinutos = resultadoProblema.TiempoMinutos
@@ -1334,8 +1391,8 @@ namespace UPDSjudgeB.Controllers
 
                     return new RankingParticipanteDto
                     {
-                        idUsuario = grupoUsuario.Key.idUsuario,
-                        nombreUsuario = grupoUsuario.Key.nombreUsuario,
+                        idUsuario = usuario.idUsuario,
+                        nombreUsuario = usuario.nombreUsuario,
                         problemasResueltos = problemasResueltos,
                         tiempoTotal = tiempoTotal,
                         cantidadIntentos = cantidadIntentosTotal,
@@ -1368,7 +1425,7 @@ namespace UPDSjudgeB.Controllers
                     int penalizacion = intentosFallidosAntesDeAC * 20;
                     int tiempoFinal = minutosHastaAC + penalizacion;
 
-                    return ("Aceptado", intentosFallidosAntesDeAC + 1, tiempoFinal);
+                    return ("Aceptado", intentosFallidosAntesDeAC, tiempoFinal);
                 }
 
                 intentosFallidosAntesDeAC++;
