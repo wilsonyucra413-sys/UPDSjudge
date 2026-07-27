@@ -1257,7 +1257,7 @@ namespace UPDSjudgeB.Controllers
 
             return Ok(dto);
         }
-        // Tipos internos auxiliares, solo para este cálculo — no son DTOs de respuesta
+        // Tipos internos auxiliares
         private record EnvioRankingInterno(int idUsuario, string nombreUsuario, int idProblema, string resultado, DateTime fechaEnvio);
         private record ProblemaRankingInterno(int idProblema, char inciso, string colorGlobo);
         private record ParticipanteRankingInterno(int idUsuario, string nombreUsuario);
@@ -1269,164 +1269,171 @@ namespace UPDSjudgeB.Controllers
             var userIdClaim = User.FindFirst("idUsuario")?.Value;
             if (userIdClaim == null) return Unauthorized(new { mensaje = "Token inválido" });
             int idUsuarioLogueado = int.Parse(userIdClaim);
+
             codigoConcurso = codigoConcurso?.Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(codigoConcurso)) return BadRequest(new { mensaje = "El código del concurso es obligatorio." });
+
+            // 1. Obtener concurso (solo si estado es 'Activo' - borrado lógico)
             var concurso = await _context.Concursos.FirstOrDefaultAsync(c => c.codigo == codigoConcurso && c.estado == "Activo");
             if (concurso == null) return NotFound(new { mensaje = "El concurso no existe o fue eliminado." });
 
+            // 2. Cálculos de tiempo (Se asume que todo está en UTC)
             var ahora = DateTime.UtcNow;
             var fechaFin = concurso.fechaInicio.AddMinutes(concurso.duracionMinutos);
+
+            // Aquí comparas la fecha actual con ese resultado
             var fechaInicioCongelamiento = fechaFin.AddMinutes(-concurso.minutosCongelamiento);
-            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo" : ahora < fechaFin ? "Activo" : "Finalizado";
+            string estadoTiempo = ahora < concurso.fechaInicio ? "Proximo" :
+                                 ahora < fechaFin ? "Activo" :
+                                 "Finalizado";
             if (estadoTiempo == "Proximo") return BadRequest(new { mensaje = "El concurso todavía no ha iniciado." });
-            bool esPrivado = !string.IsNullOrWhiteSpace(concurso.contrasena);
+
+            // 3. Verificación de acceso
             bool esCreador = concurso.idUsuarioCreador == idUsuarioLogueado;
             bool yaInscrito = await _context.ParticipantesConcursos.AnyAsync(p => p.idUsuario == idUsuarioLogueado && p.idConcurso == concurso.idConcurso && p.estado == "Activo");
-            if (esPrivado && !yaInscrito && !esCreador) return BadRequest(new { mensaje = "No tienes acceso al ranking de este concurso." });
 
-            DateTime? corte = estadoTiempo == "Activo" && concurso.minutosCongelamiento > 0 ? fechaInicioCongelamiento : null;
-            bool congeladoAhoraMismo = corte.HasValue && ahora >= corte.Value;
-            var problemas = await _context.Problemas.Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo").OrderBy(p => p.inciso)
+            if (!string.IsNullOrWhiteSpace(concurso.contrasena) && !yaInscrito && !esCreador)
+                return BadRequest(new { mensaje = "No tienes acceso al ranking de este concurso." });
+
+            // 4. Lógica de corte (Implementada según tu petición)
+            // Mientras el concurso NO haya finalizado, el ranking está limitado al inicio del congelamiento.
+            // Una vez que finaliza, se expande a la fecha fin (liberando todo).
+            DateTime limiteRanking = (estadoTiempo != "Finalizado") ? fechaInicioCongelamiento : fechaFin;
+
+            // Indica al front-end si el ranking está actualmente en modo congelado
+            bool congeladoAhoraMismo = estadoTiempo == "Activo" && ahora >= fechaInicioCongelamiento;
+
+            var problemas = await _context.Problemas
+                .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
+                .OrderBy(p => p.inciso)
                 .Select(p => new ProblemaRankingInterno(p.idProblema, p.inciso, p.colorGlobo)).ToListAsync();
-            var participantesInscritos = await _context.ParticipantesConcursos.Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo").OrderBy(p => p.idUsuario)
+
+            var participantesInscritos = await _context.ParticipantesConcursos
+                .Where(p => p.idConcurso == concurso.idConcurso && p.estado == "Activo")
                 .Select(p => new ParticipanteRankingInterno(p.idUsuario, p.Usuario.nombre)).ToListAsync();
-            var response = new RankingConcursoDto {
-                codigo = concurso.codigo, nombre = concurso.nombre, congelado = congeladoAhoraMismo, estadoTiempo = estadoTiempo,
-                fechaInicio = concurso.fechaInicio, fechaFin = fechaFin, duracionMinutos = concurso.duracionMinutos,
-                minutosCongelamiento = concurso.minutosCongelamiento, totalInscritos = participantesInscritos.Count,
+
+            var response = new RankingConcursoDto
+            {
+                codigo = concurso.codigo,
+                nombre = concurso.nombre,
+                congelado = congeladoAhoraMismo,
+                estadoTiempo = estadoTiempo,
+                fechaInicio = concurso.fechaInicio,
+                fechaFin = fechaFin,
+                duracionMinutos = concurso.duracionMinutos,
+                minutosCongelamiento = concurso.minutosCongelamiento,
+                totalInscritos = participantesInscritos.Count,
                 problemas = problemas.Select(p => new RankingProblemaDto { inciso = p.inciso, colorGlobo = p.colorGlobo }).ToList()
             };
+
             if (!problemas.Any()) return Ok(response);
 
             var idsProblemas = problemas.Select(p => p.idProblema).ToList();
             var idsParticipantes = participantesInscritos.Select(p => p.idUsuario).ToList();
-            var enviosQuery = _context.Envios.Where(e => idsProblemas.Contains(e.idProblema) && idsParticipantes.Contains(e.idUsuario) && e.upsolving == "No");
-            if (corte.HasValue) enviosQuery = enviosQuery.Where(e => e.fechaEnvio <= corte.Value);
-            var envios = await enviosQuery.OrderBy(e => e.fechaEnvio)
-                .Select(e => new EnvioRankingInterno(e.idUsuario, e.Usuario.nombre, e.idProblema, e.resultado, e.fechaEnvio)).ToListAsync();
+
+            // 5. Consulta de envíos con el filtro de tiempo dinámico
+            var envios = await _context.Envios
+                .Where(e => idsProblemas.Contains(e.idProblema) &&
+                            idsParticipantes.Contains(e.idUsuario) &&
+                            e.upsolving == "No" &&
+                            e.fechaEnvio <= limiteRanking) // <--- Aquí se aplica la magia
+                .OrderBy(e => e.fechaEnvio)
+                .Select(e => new EnvioRankingInterno(e.idUsuario, e.Usuario.nombre, e.idProblema, e.resultado, e.fechaEnvio))
+                .ToListAsync();
+
             response.totalEnvios = envios.Count;
             response.participantes = CalcularRanking(envios, problemas, participantesInscritos, concurso.fechaInicio);
-            response.problemaMasResuelto = problemas.Select(p => new { Problema = p, Cantidad = response.participantes.Count(r => r.detalle.Any(d => d.inciso == p.inciso && d.estado == "Aceptado")) })
-                .Where(x => x.Cantidad > 0).OrderByDescending(x => x.Cantidad).ThenBy(x => x.Problema.inciso)
-                .Select(x => new RankingProblemaMasResueltoDto { inciso = x.Problema.inciso, colorGlobo = x.Problema.colorGlobo, cantidadAceptaciones = x.Cantidad }).FirstOrDefault();
+
+            // Cálculo del problema más resuelto basado en lo visible
+            response.problemaMasResuelto = problemas
+                .Select(p => new
+                {
+                    Prob = p,
+                    Cant = response.participantes.Count(r => r.detalle.Any(d => d.inciso == p.inciso && d.estado == "Aceptado"))
+                })
+                .Where(x => x.Cant > 0)
+                .OrderByDescending(x => x.Cant)
+                .ThenBy(x => x.Prob.inciso)
+                .Select(x => new RankingProblemaMasResueltoDto
+                {
+                    inciso = x.Prob.inciso,
+                    colorGlobo = x.Prob.colorGlobo,
+                    cantidadAceptaciones = x.Cant
+                }).FirstOrDefault();
+
             return Ok(response);
         }
 
-        // Lógica ICPC — separada en métodos privados puros (sin BD)
-        // ============================================================
-        private List<RankingParticipanteDto> CalcularRanking(
-            List<EnvioRankingInterno> envios,
-            List<ProblemaRankingInterno> problemas,
-            List<ParticipanteRankingInterno> participantesInscritos,
-            DateTime fechaInicioConcurso)
+        // Métodos privados de lógica pura
+        private List<RankingParticipanteDto> CalcularRanking(List<EnvioRankingInterno> envios, List<ProblemaRankingInterno> problemas, List<ParticipanteRankingInterno> participantes, DateTime inicio)
         {
-            // Agrupamos UNA sola vez por (usuario, problema) — O(E), no O(U×P×E)
-            var enviosPorUsuarioYProblema = envios
-                .GroupBy(e => (e.idUsuario, e.idProblema))
-                .ToDictionary(g => g.Key, g => g.OrderBy(e => e.fechaEnvio).ToList());
+            var enviosDic = envios.GroupBy(e => (e.idUsuario, e.idProblema))
+                                  .ToDictionary(g => g.Key, g => g.OrderBy(e => e.fechaEnvio).ToList());
 
-            var usuariosUnicos = participantesInscritos;
+            var resultado = participantes.Select(u =>
+            {
+                var detalles = new List<RankingProblemaDetalleDto>();
+                int resueltos = 0, tiempoPenalizado = 0, intentosTotales = 0;
 
-            var porUsuario = usuariosUnicos
-                .Select(usuario =>
+                foreach (var p in problemas)
                 {
-                    var detalle = new List<RankingProblemaDetalleDto>();
-                    int problemasResueltos = 0;
-                    int tiempoTotal = 0;
-                    int cantidadIntentosTotal = 0;
+                    var listaEnvios = enviosDic.GetValueOrDefault((u.idUsuario, p.idProblema)) ?? new List<EnvioRankingInterno>();
+                    var (estado, intentos, tiempo) = AnalizarProblema(listaEnvios, inicio);
 
-                    foreach (var problema in problemas)
+                    detalles.Add(new RankingProblemaDetalleDto
                     {
-                        var enviosDelProblema = enviosPorUsuarioYProblema
-                            .TryGetValue((usuario.idUsuario, problema.idProblema), out var lista)
-                            ? lista
-                            : new List<EnvioRankingInterno>();
+                        inciso = p.inciso,
+                        colorGlobo = p.colorGlobo,
+                        estado = estado,
+                        intentos = intentos,
+                        tiempoMinutos = tiempo
+                    });
 
-                        var resultadoProblema = CalcularDetalleProblema(enviosDelProblema, fechaInicioConcurso);
-
-                        detalle.Add(new RankingProblemaDetalleDto
-                        {
-                            inciso = problema.inciso,
-                            colorGlobo = problema.colorGlobo,
-                            estado = resultadoProblema.Estado,
-                            intentos = resultadoProblema.Intentos,
-                            tiempoMinutos = resultadoProblema.TiempoMinutos
-                        });
-
-                        if (resultadoProblema.Estado == "Aceptado")
-                        {
-                            problemasResueltos++;
-                            tiempoTotal += resultadoProblema.TiempoMinutos ?? 0;
-                        }
-
-                        cantidadIntentosTotal += resultadoProblema.Intentos;
+                    if (estado == "Aceptado")
+                    {
+                        resueltos++;
+                        tiempoPenalizado += tiempo ?? 0;
                     }
-
-                    return new RankingParticipanteDto
-                    {
-                        idUsuario = usuario.idUsuario,
-                        nombreUsuario = usuario.nombreUsuario,
-                        problemasResueltos = problemasResueltos,
-                        tiempoTotal = tiempoTotal,
-                        cantidadIntentos = cantidadIntentosTotal,
-                        detalle = detalle
-                    };
-                })
-                .OrderByDescending(p => p.problemasResueltos)
-                .ThenBy(p => p.tiempoTotal)
-                .ThenBy(p => p.idUsuario)
-                .ToList();
-
-            AsignarPuestosCompartidos(porUsuario);
-
-            return porUsuario;
-        }
-
-        private (string Estado, int Intentos, int? TiempoMinutos) CalcularDetalleProblema(
-            List<EnvioRankingInterno> enviosOrdenados, DateTime fechaInicioConcurso)
-        {
-            if (!enviosOrdenados.Any())
-                return ("No intentado", 0, null);
-
-            int intentosFallidosAntesDeAC = 0;
-
-            foreach (var envio in enviosOrdenados)
-            {
-                if (envio.resultado == VeredictosEnvio.Aceptado)
-                {
-                    int minutosHastaAC = (int)(envio.fechaEnvio - fechaInicioConcurso).TotalMinutes;
-                    int penalizacion = intentosFallidosAntesDeAC * 20;
-                    int tiempoFinal = minutosHastaAC + penalizacion;
-
-                    return ("Aceptado", intentosFallidosAntesDeAC, tiempoFinal);
+                    intentosTotales += intentos;
                 }
 
-                intentosFallidosAntesDeAC++;
-            }
-
-            return ("No resuelto", intentosFallidosAntesDeAC, null);
-        }
-
-        private void AsignarPuestosCompartidos(List<RankingParticipanteDto> ordenados)
-        {
-            for (int i = 0; i < ordenados.Count; i++)
-            {
-                if (i == 0)
+                return new RankingParticipanteDto
                 {
-                    ordenados[i].puesto = 1;
-                    continue;
-                }
+                    idUsuario = u.idUsuario,
+                    nombreUsuario = u.nombreUsuario,
+                    problemasResueltos = resueltos,
+                    tiempoTotal = tiempoPenalizado,
+                    cantidadIntentos = intentosTotales,
+                    detalle = detalles
+                };
+            }).OrderByDescending(p => p.problemasResueltos).ThenBy(p => p.tiempoTotal).ThenBy(p => p.idUsuario).ToList();
 
-                var anterior = ordenados[i - 1];
-                var actual = ordenados[i];
-
-                bool mismoResultado = actual.problemasResueltos == anterior.problemasResueltos
-                                    && actual.tiempoTotal == anterior.tiempoTotal;
-
-                ordenados[i].puesto = mismoResultado ? anterior.puesto : i + 1;
+            for (int i = 0; i < resultado.Count; i++)
+            {
+                if (i == 0) { resultado[i].puesto = 1; continue; }
+                var ant = resultado[i - 1];
+                var act = resultado[i];
+                bool igual = act.problemasResueltos == ant.problemasResueltos && act.tiempoTotal == ant.tiempoTotal;
+                resultado[i].puesto = igual ? ant.puesto : i + 1;
             }
+            return resultado;
         }
+        private (string Estado, int Intentos, int? TiempoMinutos) AnalizarProblema(List<EnvioRankingInterno> envios, DateTime inicio)
+        {
+            if (!envios.Any()) return ("No intentado", 0, null);
+            int fallidos = 0;
+            foreach (var e in envios)
+            {
+                // CAMBIADO: Ahora busca "Accepted" para que coincida con tu BD
+                if (string.Equals(e.resultado, "Accepted", StringComparison.OrdinalIgnoreCase))
+                {
+                    int mins = (int)(e.fechaEnvio - inicio).TotalMinutes;
+                    return ("Aceptado", fallidos, mins + (fallidos * 20));
+                }
+                fallidos++;
+            }
+            return ("No resuelto", fallidos, null);
+        }
+
     }
-
-
 }
