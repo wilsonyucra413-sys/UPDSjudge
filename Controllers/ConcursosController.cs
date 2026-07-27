@@ -747,7 +747,6 @@ namespace UPDSjudgeB.Controllers
 
             var ahora = DateTime.UtcNow;
 
-            // Base: solo concursos no borrados, creados por este usuario
             IQueryable<Concurso> queryBase = _context.Concursos
                 .Where(c => c.estado == "Activo" && c.idUsuarioCreador == idUsuarioLogueado);
 
@@ -765,7 +764,6 @@ namespace UPDSjudgeB.Controllers
                     queryBase = queryBase.Where(c => c.contrasena == null || c.contrasena == "");
             }
 
-            // A partir de aquí sí aplicamos el filtro de pestaña, para la lista paginada
             IQueryable<Concurso> query = filtro?.ToLowerInvariant() switch
             {
                 "activos" => queryBase.Where(c =>
@@ -793,8 +791,17 @@ namespace UPDSjudgeB.Controllers
                     c.contrasena,
                     c.fechaInicio,
                     c.duracionMinutos,
-                    cantidadProblemas = c.Problemas.Count(p => p.estado == "Activo"),
-                    cantidadParticipantes = c.Participantes.Count(pc => pc.estado == "Activo")
+                    cantidadParticipantes = c.Participantes.Count(pc => pc.estado == "Activo"),
+                    problemas = c.Problemas
+                        .Where(p => p.estado == "Activo")
+                        .OrderBy(p => p.inciso)
+                        .Select(p => new ProblemaResumenAdminDto
+                        {
+                            inciso = p.inciso,
+                            titulo = p.titulo,
+                            colorGlobo = p.colorGlobo
+                        })
+                        .ToList()
                 })
                 .ToListAsync();
 
@@ -804,7 +811,6 @@ namespace UPDSjudgeB.Controllers
                 string estadoTiempo = ahora < c.fechaInicio ? "Proximo"
                     : ahora < fechaFin ? "Activo" : "Finalizado";
 
-
                 return new ConcursoAdminItemDto
                 {
                     codigo = c.codigo,
@@ -813,8 +819,9 @@ namespace UPDSjudgeB.Controllers
                     modalidad = string.IsNullOrWhiteSpace(c.contrasena) ? "Publico" : "Privado",
                     fechaInicio = c.fechaInicio,
                     duracionMinutos = c.duracionMinutos,
-                    cantidadProblemas = c.cantidadProblemas,
-                    cantidadParticipantes = c.cantidadParticipantes
+                    cantidadProblemas = c.problemas.Count,
+                    cantidadParticipantes = c.cantidadParticipantes,
+                    problemas = c.problemas
                 };
             }).ToList();
 
