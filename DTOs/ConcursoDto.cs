@@ -88,7 +88,12 @@ namespace UPDSjudgeB.DTOs
         // el usuario está inscrito. Antes de eso, viene vacío.
         public List<ProblemaResumenDto> problemas { get; set; } = new();
     }
-
+    public class ProblemaResumenAdminDto
+    {
+        public char inciso { get; set; }
+        public string titulo { get; set; }
+        public string colorGlobo { get; set; }
+    }
     public class ProblemaResumenDto
     {
         public int idProblema { get; set; }
@@ -106,12 +111,13 @@ namespace UPDSjudgeB.DTOs
     {
         public string codigo { get; set; }
         public string nombre { get; set; }
-        public string estadoTiempo { get; set; }   // "Proximo" | "Activo" | "Finalizado"
-        public string modalidad { get; set; }       // "Publico" | "Privado"
+        public string estadoTiempo { get; set; }
+        public string modalidad { get; set; }
         public DateTime fechaInicio { get; set; }
         public int duracionMinutos { get; set; }
         public int cantidadProblemas { get; set; }
         public int cantidadParticipantes { get; set; }
+        public List<ProblemaResumenAdminDto> problemas { get; set; } = new(); // <-- nuevo
     }
 
     public class ResumenConteoDto
